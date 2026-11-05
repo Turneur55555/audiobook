@@ -52,6 +52,24 @@ export function episodeFrom(title: string | null, filename?: string): number | n
   return filename ? parseEpisode(filename) : title ? parseEpisode(title) : null;
 }
 
+/** "Épisode 12 — Le titre" (ou "Épisode 12. Le titre.") → { episode: 12, title: "Le titre" }. */
+export function splitEpisodeHeading(heading: string | null): { episode: number; title: string } | null {
+  const m = heading?.match(/^\s*[ée]pisode\s*(\d+)\s*[.:—–-]+\s*(.+?)\.?\s*$/i);
+  return m ? { episode: parseInt(m[1]!, 10), title: m[2]!.trim() } : null;
+}
+
+/** Retire la ligne de titre Markdown ("# …") du début du texte. */
+export function stripHeading(text: string): string {
+  return text.replace(/^\s*#+[^\n]*\n+/, "").trim();
+}
+
+/** Même tome (sans tenir compte de la casse), même langue, même numéro d'épisode. */
+export function findSameEpisode(cs: Chapter[], series: string, lang: Lang, episode: number | null): Chapter | undefined {
+  if (episode === null) return undefined;
+  const s = series.trim().toLowerCase();
+  return cs.find((c) => c.series.trim().toLowerCase() === s && c.lang === lang && c.episode === episode);
+}
+
 /** ASCII, no accents, spaces → dashes, lowercase. */
 export function slugify(s: string): string {
   return s

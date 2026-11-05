@@ -1,15 +1,15 @@
 import { useRef, useState } from "react";
 import { audioDuration } from "@/lib/audiobook-db";
-import { baseName, cleanTitle, episodeFrom, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
-import { frError, insertChapter, uniqueAudioPath, uploadAudio } from "@/lib/supabase";
+import { baseName, cleanTitle, episodeFrom, findSameEpisode, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
+import { frError, insertChapter, removeAudioQuietly, uniqueAudioPath, updateChapterContent, uploadAudio } from "@/lib/supabase";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
 const big = "min-h-14 w-full rounded-xl px-5 text-lg font-medium active:scale-95 transition";
 const isAudio = (f: File) => f.type.startsWith("audio/") || /\.(mp3|m4a)$/i.test(f.name);
 
-interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | "erreur"; error?: string }
+interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | "erreur"; updated?: boolean; error?: string }
 
-export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
+export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void }) {
   const [series, setSeries] = useState("");
   const [lang, setLang] = useState<Lang>("fr");
   const [title, setTitle] = useState("");
@@ -23,11 +23,23 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
 
   const setJob = (i: number, j: Partial<Job>) => setJobs((o) => o.map((x, k) => (k === i ? { ...x, ...j } : x)));
 
-  async function save(item: { text?: File | string; audio?: File; title?: string; episode?: number | null }, reserved: Set<string>, onPct: (n: number) => void) {
-    const body = typeof item.text === "string" ? item.text : item.text ? await item.text.text() : "";
+  /**
+   * Dépose un épisode. S'il existe déjà (même tome, même langue, même numéro), il est mis à jour :
+   * nouveau texte s'il y en a un, audio ajouté ou remplacé. Sinon, il est créé.
+   */
+  async function save(
+    item: { text?: File | string; audio?: File; title?: string; episode?: number | null },
+    reserved: Set<string>,
+    onPct: (n: number) => void,
+  ): Promise<{ chapter: Chapter; updated: boolean }> {
+    const raw = typeof item.text === "string" ? item.text : item.text ? await item.text.text() : "";
     const fname = item.text instanceof File ? item.text.name : item.audio?.name;
-    const t = item.title || titleFromText(body) || (fname ? cleanTitle(fname) : "Sans titre");
-    const ep = item.episode !== undefined && item.episode !== null ? item.episode : episodeFrom(titleFromText(body), fname);
+    const heading = titleFromText(raw);
+    const split = splitEpisodeHeading(heading);
+    const body = /^\s*#/.test(raw) ? stripHeading(raw) : raw.trim();
+    const t = item.title || split?.title || heading || (fname ? cleanTitle(fname) : "Sans titre");
+    const ep = item.episode !== undefined && item.episode !== null ? item.episode : split?.episode ?? episodeFrom(heading, fname);
+    const existing = findSameEpisode(p.chapters, series, lang, ep);
     let audio_path: string | null = null;
     let duration: number | null = null;
     if (item.audio) {
@@ -37,7 +49,19 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
       await uploadAudio(audio_path, item.audio, onPct);
     }
     onPct(1);
-    return insertChapter({ title: t, episode: ep, series: series.trim(), lang, body, audio_path, duration });
+    if (!existing) {
+      const chapter = await insertChapter({ title: t, episode: ep, series: series.trim(), lang, body, audio_path, duration });
+      return { chapter, updated: false };
+    }
+    const chapter = await updateChapterContent(existing.id, {
+      title: item.text ? t : existing.title,
+      episode: ep,
+      body: body || existing.text,
+      audio_path: audio_path ?? existing.audioPath ?? null,
+      duration: audio_path ? duration : existing.duration ?? null,
+    });
+    if (audio_path && existing.audioPath) void removeAudioQuietly(existing.audioPath);
+    return { chapter, updated: true };
   }
 
   async function importFiles(list: FileList | null) {
@@ -55,20 +79,25 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
     const items = [...byName.values()];
     setJobs(items.map((it) => ({ name: [it.text?.name, it.audio?.name].filter(Boolean).join(" + "), pct: 0, status: "attente" })));
     const reserved = new Set<string>();
-    const added: Chapter[] = [];
+    const saved: Chapter[] = [];
+    let created = 0;
+    let updated = 0;
     let failed = 0;
     for (let i = 0; i < items.length; i++) {
       setJob(i, { status: "envoi" });
       try {
-        added.push(await save(items[i]!, reserved, (pct) => setJob(i, { pct })));
-        setJob(i, { status: "ok", pct: 1 });
+        const r = await save(items[i]!, reserved, (pct) => setJob(i, { pct }));
+        saved.push(r.chapter);
+        if (r.updated) updated++;
+        else created++;
+        setJob(i, { status: "ok", pct: 1, updated: r.updated });
+        p.onSaved([r.chapter]);
       } catch (e) {
         failed++;
         setJob(i, { status: "erreur", error: frError(e) });
       }
     }
-    p.onAdded(added);
-    setMsg(`${added.length} chapitre(s) ajouté(s)${failed ? `, ${failed} en échec (voir ci-dessous)` : ""}.`);
+    setMsg(`${created} épisode(s) ajouté(s), ${updated} mis à jour${failed ? `, ${failed} en échec (voir ci-dessous)` : ""}.`);
     setBusy(false);
   }
 
@@ -79,12 +108,12 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
     setJobs(audio ? [{ name: audio.name, pct: 0, status: "envoi" }] : []);
     try {
       const ep = episode.trim() ? parseInt(episode, 10) : null;
-      const c = await save({ text, ...(audio ? { audio } : {}), title: title.trim(), episode: ep }, new Set(), (pct) => setJob(0, { pct }));
-      if (audio) setJob(0, { status: "ok", pct: 1 });
-      p.onAdded([c]);
+      const r = await save({ text, ...(audio ? { audio } : {}), title: title.trim(), episode: ep }, new Set(), (pct) => setJob(0, { pct }));
+      if (audio) setJob(0, { status: "ok", pct: 1, updated: r.updated });
+      p.onSaved([r.chapter]);
       setTitle(""); setEpisode(""); setText(""); setAudio(null);
       if (audioInput.current) audioInput.current.value = "";
-      setMsg("Chapitre déposé dans la bibliothèque.");
+      setMsg(r.updated ? "Épisode existant mis à jour." : "Chapitre déposé dans la bibliothèque.");
     } catch (e) {
       if (audio) setJob(0, { status: "erreur", error: frError(e) });
       setMsg(`Dépôt impossible : ${frError(e)}`);
@@ -102,7 +131,7 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
               <div className="flex justify-between gap-2 text-sm">
                 <span className="truncate">{j.name}</span>
                 <span className={j.status === "erreur" ? "text-destructive" : "text-muted-foreground"}>
-                  {j.status === "ok" ? "✓ Envoyé" : j.status === "erreur" ? "Échec" : j.status === "envoi" ? `${Math.round(j.pct * 100)} %` : "En attente"}
+                  {j.status === "ok" ? (j.updated ? "✓ Mis à jour" : "✓ Ajouté") :j.status === "erreur" ? "Échec" : j.status === "envoi" ? `${Math.round(j.pct * 100)} %` : "En attente"}
                 </span>
               </div>
               <div className="mt-2 h-2 rounded-full bg-muted">
@@ -129,7 +158,7 @@ export function Atelier(p: { onAdded: (cs: Chapter[]) => void }) {
 
       <section className="space-y-3">
         <h2 className="font-display text-2xl">Importer des fichiers</h2>
-        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte.</p>
+        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte. Un épisode déjà présent dans ce tome est mis à jour, pas dupliqué.</p>
         <label className={`${big} flex cursor-pointer items-center justify-center bg-primary text-primary-foreground ${busy ? "pointer-events-none opacity-50" : ""}`}>
           {busy ? "Envoi en cours…" : "Choisir des fichiers"}
           <input type="file" multiple hidden accept=".txt,.md,.mp3,.m4a,text/plain,text/markdown,audio/mpeg,audio/mp4,audio/x-m4a"

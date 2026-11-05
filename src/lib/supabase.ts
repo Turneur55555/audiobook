@@ -74,6 +74,20 @@ export async function updateChapter(id: string, patch: { title: string; episode:
   if (error) throw error;
 }
 
+/** Remplace le contenu d'un épisode existant (texte, titre, audio) et renvoie la ligne à jour. */
+export async function updateChapterContent(id: string, patch: {
+  title: string; episode: number | null; body: string; audio_path: string | null; duration: number | null;
+}): Promise<Chapter> {
+  const { data, error } = await sb().from("chapters").update(patch).eq("id", id).select("*").single();
+  if (error) throw error;
+  return toChapter(data as Row);
+}
+
+/** Supprime un fichier audio devenu inutile (sans bloquer si ça échoue). */
+export async function removeAudioQuietly(path: string) {
+  try { await sb().storage.from(BUCKET).remove([path]); } catch { /* fichier orphelin : sans gravité */ }
+}
+
 export async function deleteChapterRemote(c: Chapter) {
   if (c.audioPath) {
     const { error } = await sb().storage.from(BUCKET).remove([c.audioPath]);

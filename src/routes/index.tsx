@@ -195,7 +195,12 @@ function Index() {
         {!loaded ? (
           <p className="text-muted-foreground">Chargement…</p>
         ) : tab === "atelier" && isOwner ? (
-          <Atelier onAdded={(cs) => setChapters((o) => [...o, ...cs])} />
+          <Atelier chapters={chapters} onSaved={(cs) => setChapters((o) => {
+            const byId = new Map(cs.map((c) => [c.id, c]));
+            // Garde la position d'écoute locale des épisodes mis à jour ; ajoute les nouveaux.
+            const merged = o.map((c) => (byId.has(c.id) ? { ...byId.get(c.id)!, position: c.position, done: c.done } : c));
+            return [...merged, ...cs.filter((c) => !o.some((x) => x.id === c.id))];
+          })} />
         ) : tab === "auteur" ? (
           <AuthorLogin email={email} onDone={() => setTab(isOwner ? "atelier" : "biblio")} />
         ) : tab === "biblio" || tab === "atelier" ? (
