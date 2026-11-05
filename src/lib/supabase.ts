@@ -1,0 +1,121 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { slugify, uniqueName, type Chapter, type Lang } from "./chapters";
+
+// External Supabase project. The publishable key is meant to live in front-end code.
+export const SUPABASE_URL = "https://hoyhnxrcmjdbmsofniub.supabase.co";
+export const SUPABASE_KEY = "sb_publishable_Z-ee5l9Ut6_CX6NJ4pSIiA_N3AdPYGE";
+export const OWNER_EMAIL = "attal.nathan@gmail.com";
+export const BUCKET = "audiobook";
+
+let client: SupabaseClient | null = null;
+/** Lazily created so nothing runs at module scope (SSR). */
+export function sb() {
+  return (client ??= createClient(SUPABASE_URL, SUPABASE_KEY));
+}
+
+export const isOwnerEmail = (e?: string | null) => !!e && e.trim().toLowerCase() === OWNER_EMAIL;
+
+interface Row {
+  id: string;
+  series: string | null;
+  lang: Lang;
+  episode: number | null;
+  title: string;
+  body: string | null;
+  audio_path: string | null;
+  duration: number | null;
+  created_at: string;
+}
+
+function toChapter(r: Row): Chapter {
+  const t = new Date(r.created_at).getTime() || 0;
+  return {
+    id: r.id,
+    title: r.title,
+    episode: r.episode,
+    series: r.series ?? "",
+    lang: r.lang === "en" ? "en" : "fr",
+    text: r.body ?? "",
+    audioPath: r.audio_path,
+    audioUrl: r.audio_path ? sb().storage.from(BUCKET).getPublicUrl(r.audio_path).data.publicUrl : undefined,
+    duration: r.duration ?? undefined,
+    position: 0,
+    createdAt: t,
+    updatedAt: t,
+  };
+}
+
+export function frError(e: unknown): string {
+  const m = (e as { message?: string })?.message ?? String(e);
+  if (/row-level security|permission|not authorized|unauthorized|403|401/i.test(m)) return "accès refusé — êtes-vous bien connecté avec le compte auteur ?";
+  if (/exceeded|too large|413|payload/i.test(m)) return "fichier trop volumineux (100 Mo maximum).";
+  if (/mime|content type|invalid_mime/i.test(m)) return "format refusé (mp3 ou m4a uniquement).";
+  if (/fetch|network|failed to load/i.test(m)) return "problème de connexion réseau, réessayez.";
+  if (/rate limit|too many/i.test(m)) return "trop de tentatives, patientez quelques minutes.";
+  return m;
+}
+
+export async function fetchChapters(): Promise<Chapter[]> {
+  const { data, error } = await sb().from("chapters").select("*");
+  if (error) throw error;
+  return (data as Row[]).map(toChapter);
+}
+
+export async function insertChapter(c: {
+  title: string; episode: number | null; series: string; lang: Lang; body: string; audio_path?: string | null; duration?: number | null;
+}): Promise<Chapter> {
+  const { data, error } = await sb().from("chapters").insert({ ...c, series: c.series || null }).select("*").single();
+  if (error) throw error;
+  return toChapter(data as Row);
+}
+
+export async function updateChapter(id: string, patch: { title: string; episode: number | null; series: string }) {
+  const { error } = await sb().from("chapters").update({ ...patch, series: patch.series || null }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteChapterRemote(c: Chapter) {
+  if (c.audioPath) {
+    const { error } = await sb().storage.from(BUCKET).remove([c.audioPath]);
+    if (error) throw error;
+  }
+  const { error } = await sb().from("chapters").delete().eq("id", c.id);
+  if (error) throw error;
+}
+
+/** <serie-slug>/<lang>/<ascii-name>.mp3 without collision with existing files. */
+export async function uniqueAudioPath(series: string, lang: Lang, filename: string, reserved: Set<string>) {
+  const folder = `${slugify(series) || "sans-serie"}/${lang}`;
+  const ext = (filename.match(/\.(mp3|m4a)$/i)?.[0] ?? ".mp3").toLowerCase();
+  const base = slugify(filename.replace(/\.[^.]+$/, "")) || "audio";
+  const { data } = await sb().storage.from(BUCKET).list(folder, { limit: 1000 });
+  const taken = new Set([...(data ?? []).map((f) => f.name), ...[...reserved].filter((p) => p.startsWith(folder + "/")).map((p) => p.slice(folder.length + 1))]);
+  const path = `${folder}/${uniqueName(base, ext, taken)}`;
+  reserved.add(path);
+  return path;
+}
+
+/** Upload with progress (XHR, since supabase-js has no progress events). */
+export async function uploadAudio(path: string, file: File, onProgress: (pct: number) => void) {
+  const { data } = await sb().auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("session expirée, reconnectez-vous.");
+  const type = file.type || (/\.m4a$/i.test(file.name) ? "audio/mp4" : "audio/mpeg");
+  await new Promise<void>((res, rej) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`);
+    x.setRequestHeader("Authorization", `Bearer ${token}`);
+    x.setRequestHeader("apikey", SUPABASE_KEY);
+    x.setRequestHeader("Content-Type", type);
+    x.setRequestHeader("x-upsert", "false");
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return res();
+      let msg = `${x.status}`;
+      try { msg = `${JSON.parse(x.responseText).message ?? msg} (${x.status})`; } catch { /* keep status */ }
+      rej(new Error(msg));
+    };
+    x.onerror = () => rej(new Error("network"));
+    x.send(file);
+  });
+}

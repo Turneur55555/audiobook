@@ -1,0 +1,13 @@
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.tanstack/**
+.nitro
+.vercel
+*.local
+*.log
+.DS_Store
+.idea
+.vscode/*
