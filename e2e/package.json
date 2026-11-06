@@ -1,0 +1,13 @@
+{
+  "name": "mon-audiobook-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Tests de bout en bout (navigateur réel). Voir README.md.",
+  "scripts": {
+    "test": "node run-all.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.15",
+    "playwright": "1.63.0"
+  }
+}

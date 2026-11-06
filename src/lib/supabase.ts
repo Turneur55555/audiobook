@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { noteServerDate } from "./sync";
 import { slugify, uniqueName, type Chapter, type Lang } from "./chapters";
 
 // External Supabase project. The publishable key is meant to live in front-end code.
@@ -14,7 +15,17 @@ export const BUCKET = "audiobook";
 let client: SupabaseClient | null = null;
 /** Lazily created so nothing runs at module scope (SSR). */
 export function sb() {
-  return (client ??= createClient(SUPABASE_URL, SUPABASE_KEY));
+  return (client ??= createClient(SUPABASE_URL, SUPABASE_KEY, {
+    global: {
+      // Mesure l'écart entre l'horloge de l'appareil et celle du serveur (voir sync.clockNow).
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const t0 = Date.now();
+        const res = await fetch(input, init);
+        noteServerDate(res.headers.get("Date"), t0, Date.now());
+        return res;
+      },
+    },
+  }));
 }
 
 export async function isOwnerEmail(e?: string | null): Promise<boolean> {

@@ -90,3 +90,25 @@ describe("owner check", () => {
     expect(await isOwnerEmail(null)).toBe(false);
   });
 });
+
+describe("server clock", () => {
+  it("corrects a device clock that is 3 minutes late, and stays monotonic", async () => {
+    const { noteServerDate, clockNow, clockOffsetMs } = await import("@/lib/sync");
+    const now = Date.now();
+    noteServerDate(new Date(now + 180_000).toUTCString(), now - 50, now + 50);
+    expect(Math.abs(clockOffsetMs() - 180_000)).toBeLessThan(1600);
+    const a = clockNow();
+    const b = clockNow();
+    expect(b).toBeGreaterThan(a);
+    expect(Math.abs(a - (Date.now() + 180_000))).toBeLessThan(1600);
+  });
+  it("ignores slow responses and sub-second noise", async () => {
+    const { noteServerDate, clockOffsetMs } = await import("@/lib/sync");
+    const before = clockOffsetMs();
+    const now = Date.now();
+    noteServerDate(new Date(now - 3_600_000).toUTCString(), now - 20_000, now); // 20 s de trajet : ignoré
+    noteServerDate(new Date(now + before + 400).toUTCString(), now, now); // < 1,5 s d'écart : ignoré
+    noteServerDate(null, now, now);
+    expect(clockOffsetMs()).toBe(before);
+  });
+});

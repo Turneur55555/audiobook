@@ -6,6 +6,41 @@
 import type { LocalPos } from "./audiobook-db";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+// ---------- Horloge commune ----------
+// « La plus récente gagne » suppose des horloges d'accord. Si un appareil retarde de quelques
+// minutes, ses écoutes passeraient pour anciennes et seraient écrasées. On date donc tout en
+// heure du serveur : l'écart est mesuré grâce à l'en-tête Date de chaque réponse Supabase.
+const OFFSET_KEY = "sync-clock-offset";
+let clockOffset = (() => {
+  try {
+    return Number(globalThis.localStorage?.getItem(OFFSET_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+})();
+let lastStamp = 0;
+
+/** Note l'heure du serveur (en-tête Date, à la seconde près) pour une requête partie à t0 et revenue à t1. */
+export function noteServerDate(header: string | null, t0: number, t1: number) {
+  const server = header ? Date.parse(header) : NaN;
+  if (!isFinite(server) || t1 - t0 > 10_000) return; // réponse trop lente : mesure peu fiable
+  const offset = Math.round(server + 500 - (t0 + t1) / 2); // +500 ms : l'en-tête est tronqué à la seconde
+  if (Math.abs(offset - clockOffset) < 1500) return; // bruit de mesure : on garde la valeur actuelle
+  clockOffset = offset;
+  try {
+    globalThis.localStorage?.setItem(OFFSET_KEY, String(offset));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Heure du serveur estimée, toujours croissante sur cet appareil. */
+export function clockNow(): number {
+  lastStamp = Math.max(lastStamp + 1, Date.now() + clockOffset);
+  return lastStamp;
+}
+export const clockOffsetMs = () => clockOffset;
 export const CODE_RE = /^[A-Z2-7]{16}$/;
 
 /** 16 caractères base32 (80 bits aléatoires) : impossible à deviner, mais tapable à la main. */

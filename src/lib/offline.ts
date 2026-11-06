@@ -40,14 +40,23 @@ export async function listDownloaded(): Promise<Set<string>> {
 
 /** Télécharge un MP3 en entier, avec progression, puis le range dans le cache. */
 export async function downloadAudio(src: string, onProgress: (pct: number) => void, signal?: AbortSignal): Promise<number> {
-  const res = await fetch(src, { mode: "cors", cache: "no-store", ...(signal ? { signal } : {}) });
+  let res: Response;
+  try {
+    res = await fetch(src, { mode: "cors", cache: "no-store", ...(signal ? { signal } : {}) });
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") throw e;
+    throw new Error("connexion interrompue, réessaie avec du réseau.");
+  }
   if (!res.ok || !res.body) throw new Error(`téléchargement impossible (${res.status})`);
   const total = Number(res.headers.get("Content-Length") || 0);
   const reader = res.body.getReader();
   const chunks: BlobPart[] = [];
   let got = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    const { done, value } = await reader.read().catch((e: Error) => {
+      if (e?.name === "AbortError") throw e;
+      throw new Error("connexion interrompue pendant le téléchargement, réessaie.");
+    });
     if (done) break;
     chunks.push(value);
     got += value.length;

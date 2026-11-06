@@ -321,6 +321,8 @@ function AudioPlayer(p: EngineProps) {
     };
     const onPlay = () => {
       setPlaying(true);
+      // Un épisode fini qu'on relance redevient « en cours ».
+      if (mine() && live.current.chapter.done) live.current.onUpdate(c.id, { done: false });
       if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
     };
     const onPause = () => {

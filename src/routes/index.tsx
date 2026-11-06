@@ -36,7 +36,20 @@ function Index() {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<Tab>("biblio");
+  const [tab, setTabState] = useState<Tab>("biblio");
+  // Chaque onglet garde son défilement ; « Lecture » s'ouvre toujours en haut (commandes visibles),
+  // même si l'on a touché « Écouter » tout en bas de la bibliothèque.
+  const scrollByTab = useRef<Partial<Record<Tab, number>>>({});
+  const tabRef = useRef(tab);
+  const setTab = (k: Tab) => {
+    if (k === tabRef.current) return;
+    scrollByTab.current[tabRef.current] = window.scrollY;
+    tabRef.current = k;
+    setTabState(k);
+  };
+  useEffect(() => {
+    window.scrollTo(0, tab === "lecture" ? 0 : scrollByTab.current[tab] ?? 0);
+  }, [tab]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [token, setToken] = useState(0);
   const [email, setEmail] = useState<string | null>(null);
@@ -228,7 +241,7 @@ function Index() {
       ("done" in patch && !!patch.done !== !!cur.done) ||
       ("duration" in patch && patch.duration !== cur.duration);
     if (LOCAL.some((k) => k in patch) && changed) {
-      const pos: db.LocalPos = { id, position: next.position, duration: next.duration, done: next.done, updatedAt: Date.now() };
+      const pos: db.LocalPos = { id, position: next.position, duration: next.duration, done: next.done, updatedAt: sync.clockNow() };
       void db.putPosition(pos);
       pending.current.set(id, pos);
       schedulePush();
@@ -290,7 +303,8 @@ function Index() {
       const { toApply, toPush } = sync.mergePositions(local, remote);
       const applied = applyRemote(toApply);
       // Reprendre là où on s'est arrêté sur l'autre appareil, si rien n'est en lecture ici.
-      const newest = sync.latest(applied);
+      // On ne suit que les écoutes en cours (pas un simple « marqué écouté » fait ailleurs).
+      const newest = sync.latest(applied.filter((p) => !p.done && p.position > 0));
       const localNewest = sync.latest(local);
       if (newest && (!localNewest || newest.updatedAt > localNewest.updatedAt) && !engine.isPlaying()
         && !(typeof window !== "undefined" && window.speechSynthesis?.speaking)) {
@@ -368,7 +382,10 @@ function Index() {
       setNotice("Cet épisode n’est pas téléchargé : il faut du réseau pour l’écouter.");
       return;
     }
-    if (url) engine.playChapter(id, url, c!.position);
+    // « Réécouter » un épisode fini : il repart du début et n'est plus marqué écouté.
+    const start = c?.done ? 0 : c?.position ?? 0;
+    if (c?.done) update(id, { done: false, position: 0 });
+    if (url) engine.playChapter(id, url, start);
     else engine.stop();
     setCurrentId(id);
     setToken((t) => t + 1);
