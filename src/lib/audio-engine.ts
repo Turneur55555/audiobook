@@ -1,4 +1,6 @@
 /** Single shared <audio> element for the whole app (client only, never rendered by React). */
+import { diag } from "./diag";
+
 export interface EngineHooks {
   getNext: () => ({ id: string; url?: string | undefined } & NowPlaying) | null;
   onLeave: (id: string, seconds: number) => void;
@@ -22,16 +24,25 @@ export function setNowPlaying(c: NowPlaying) {
   });
 }
 
+let lastPositionState = 0;
+/**
+ * Tell the lock screen where we really are. iOS extrapolates the position between two updates:
+ * without regular updates, every buffering pause (4G) makes the lock screen run ahead of the audio
+ * — up to « −0:00 » while one or two minutes are still left.
+ */
 export function updatePositionState(a: HTMLAudioElement) {
   if (!("mediaSession" in navigator) || !navigator.mediaSession.setPositionState) return;
   const d = a.duration;
   if (!isFinite(d) || d <= 0) return;
+  lastPositionState = Date.now();
   try {
     navigator.mediaSession.setPositionState({ duration: d, playbackRate: a.playbackRate || 1, position: Math.min(a.currentTime, d) });
   } catch {
     /* ignore */
   }
 }
+
+const srcKind = (s: string) => (s.startsWith("blob:") ? "blob" : s.includes("/offline-audio") ? "téléchargé" : s ? "réseau" : "aucun");
 
 let el: HTMLAudioElement | null = null;
 let currentId: string | null = null;
@@ -48,8 +59,22 @@ export function getAudio(): HTMLAudioElement {
     el = new Audio();
     el.preload = "auto";
     const a0 = el;
-    for (const ev of ["loadedmetadata", "durationchange", "play", "pause", "ratechange", "seeked"])
+    for (const ev of ["loadedmetadata", "durationchange", "play", "pause", "ratechange", "seeked", "playing", "waiting", "stalled", "ended"])
       a0.addEventListener(ev, () => updatePositionState(a0));
+    a0.addEventListener("timeupdate", () => {
+      if (Date.now() - lastPositionState > 2000) updatePositionState(a0);
+    });
+    // Journal de lecture (diagnostic sur iPhone, où l'on ne peut pas ouvrir la console).
+    for (const ev of ["play", "playing", "pause", "waiting", "stalled", "ended", "error", "loadedmetadata"])
+      a0.addEventListener(ev, () =>
+        diag(ev, {
+          ch: currentId?.slice(0, 8),
+          t: Math.round(a0.currentTime),
+          d: isFinite(a0.duration) ? Math.round(a0.duration) : String(a0.duration),
+          src: srcKind(a0.currentSrc || a0.src),
+          ...(ev === "error" ? { code: a0.error?.code, msg: a0.error?.message } : {}),
+        }),
+      );
     el.addEventListener("ended", () => {
       const a = el!;
       const endedId = currentId;
@@ -64,6 +89,7 @@ export function getAudio(): HTMLAudioElement {
           nextId = n.id;
         }
       }
+      diag("enchaînement", { fini: endedId.slice(0, 8), suivant: nextId?.slice(0, 8) ?? "aucun" });
       hooks?.onChapterEnded(endedId, isFinite(duration) ? duration : 0, nextId);
     });
   }
@@ -126,7 +152,10 @@ export function playChapter(id: string, url: string, start: number) {
   loadChapter(id, url, start);
   getAudio()
     .play()
-    .catch((e) => console.error("[audio-engine] play() refusé :", e));
+    .catch((e) => {
+      diag("play refusé", { ch: id.slice(0, 8), err: (e as Error)?.name });
+      console.error("[audio-engine] play() refusé :", e);
+    });
 }
 
 export function setRate(r: number) {

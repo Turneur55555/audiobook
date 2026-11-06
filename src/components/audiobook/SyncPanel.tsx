@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import qrcode from "qrcode-generator";
 import { formatCode, normalizeCode, syncLink } from "@/lib/sync";
+import { diagClear, diagText } from "@/lib/diag";
 
 const big = "min-h-14 w-full rounded-xl px-5 text-lg font-medium active:scale-95 transition";
 const field = "h-14 rounded-xl border border-input bg-card px-3 text-base tracking-wider uppercase placeholder:normal-case placeholder:tracking-normal";
@@ -120,6 +121,7 @@ export function SyncPanel(p: {
         </div>
       </div>
       {msg && <p className="rounded-xl bg-secondary p-3" role="status">{msg}</p>}
+      <DiagLog />
       <details className="text-muted-foreground">
         <summary className="cursor-pointer py-2">Sauvegarde manuelle (fichier)</summary>
         <div className="mt-2 grid grid-cols-2 gap-2">
@@ -131,5 +133,25 @@ export function SyncPanel(p: {
         </div>
       </details>
     </section>
+  );
+}
+
+/** Journal de lecture à copier pour signaler un problème (iPhone : pas de console). */
+function DiagLog() {
+  const [text, setText] = useState("");
+  const [msg, setMsg] = useState("");
+  return (
+    <details className="text-muted-foreground" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) setText(diagText()); }}>
+      <summary className="cursor-pointer py-2">Journal de lecture (en cas de problème)</summary>
+      <p className="text-sm">Si la lecture se coupe ou n’enchaîne pas, copie ce journal et envoie-le.</p>
+      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-secondary p-3 text-xs text-foreground">{text || "Vide."}</pre>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button className={`${big} bg-secondary text-foreground`} onClick={async () => {
+          try { await navigator.clipboard.writeText(diagText()); setMsg("Journal copié."); } catch { setMsg("Copie impossible : sélectionne le texte à la main."); }
+        }}>Copier le journal</button>
+        <button className={`${big} bg-secondary text-foreground`} onClick={() => { diagClear(); setText(""); setMsg("Journal vidé."); }}>Vider</button>
+      </div>
+      {msg && <p className="mt-2 text-sm" role="status">{msg}</p>}
+    </details>
   );
 }

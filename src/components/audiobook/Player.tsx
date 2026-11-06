@@ -160,7 +160,7 @@ interface EngineProps extends PlayerProps {
 
 function setupMediaSession(
   c: Chapter,
-  h: { play: () => void; pause: () => void; prev?: (() => void) | undefined; next?: (() => void) | undefined; back: () => void; fwd: () => void; seek?: (t: number) => void },
+  h: { play: () => void; pause: () => void; prev?: (() => void) | undefined; next?: (() => void) | undefined; back: (offset?: number) => void; fwd: (offset?: number) => void; seek?: (t: number) => void },
 ) {
   if (!("mediaSession" in navigator)) return;
   engine.setNowPlaying(c);
@@ -171,8 +171,8 @@ function setupMediaSession(
     ["pause", h.pause],
     ["previoustrack", h.prev],
     ["nexttrack", h.next],
-    ["seekbackward", h.back],
-    ["seekforward", h.fwd],
+    ["seekbackward", (d) => h.back(d.seekOffset ?? undefined)],
+    ["seekforward", (d) => h.fwd(d.seekOffset ?? undefined)],
     ["seekto", seek ? (d) => { if (d.seekTime != null) seek(d.seekTime); } : undefined],
   ];
   for (const [a, fn] of map) {
@@ -350,7 +350,9 @@ function AudioPlayer(p: EngineProps) {
   useSleep(p.sleepEnd, pause, p.onSleepDone);
   useEffect(() => {
     setupMediaSession(c, {
-      play, pause, prev: p.onPrev, next: p.onNext, back: () => seek(-15), fwd: () => seek(15),
+      // Écran verrouillé : iOS affiche des boutons « 10 », on saute donc de 10 s (ou de ce qu'il demande).
+      play, pause, prev: p.onPrev, next: p.onNext,
+      back: (o?: number) => seek(-(o ?? 10)), fwd: (o?: number) => seek(o ?? 10),
       seek: (s) => seekTo(s),
     });
   }, [c.id, c.title, c.series, c.episode, p.onPrev, p.onNext]);
