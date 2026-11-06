@@ -80,9 +80,14 @@ function Index() {
   const offRef = useRef({ downloaded, swOn });
   offRef.current = { downloaded, swOn };
   /** Adresse à lire : la copie téléchargée si elle existe (et que le service worker est actif), sinon l'original. */
+  /** Copies locales (blob:) prêtes : épisode en cours et suivant. Clé : adresse d'origine normalisée. */
+  const prepared = useRef(new Map<string, string>());
+  const [prepRev, setPrepRev] = useState(0);
   const playUrl = (c: Chapter): string | undefined => {
     const src = c.sourceUrl ?? c.audioUrl;
     if (!src) return undefined;
+    const local = prepared.current.get(offline.norm(src));
+    if (local) return local;
     const { downloaded: d, swOn: on } = offRef.current;
     return on && d.has(offline.norm(src)) ? offline.offlineUrl(src) : src;
   };
@@ -394,7 +399,7 @@ function Index() {
 
   const currentIdRef = useRef(currentId);
   currentIdRef.current = currentId;
-  const view = useMemo(() => chapters.map((c) => (c.audioUrl ? { ...c, audioUrl: playUrl(c) } : c)), [chapters, downloaded, swOn]);
+  const view = useMemo(() => chapters.map((c) => (c.audioUrl ? { ...c, audioUrl: playUrl(c) } : c)), [chapters, downloaded, swOn, prepRev]);
   const current = view.find((c) => c.id === currentId) ?? null;
   const siblings = useMemo(() => {
     if (!current) return { prev: undefined, next: undefined };
@@ -413,6 +418,39 @@ function Index() {
 
   const nextRef = useRef<string | undefined>(undefined);
   nextRef.current = siblings.next;
+
+  // Copie locale de l'épisode en cours et du suivant (téléchargés) : avance/recul fiables sur iPhone,
+  // et enchaînement sans réseau ni service worker, même écran verrouillé.
+  useEffect(() => {
+    const wanted = [currentId, siblings.next]
+      .map((id) => ref.current.find((c) => c.id === id))
+      .filter((c): c is Chapter => !!c && !!(c.sourceUrl ?? c.audioUrl) && downloaded.has(offline.norm((c.sourceUrl ?? c.audioUrl)!)));
+    const keep = new Set(wanted.map((c) => offline.norm((c.sourceUrl ?? c.audioUrl)!)));
+    for (const [k, u] of prepared.current)
+      if (!keep.has(k) && engine.currentSource() !== u) {
+        URL.revokeObjectURL(u);
+        prepared.current.delete(k);
+      }
+    let cancelled = false;
+    void (async () => {
+      for (const c of wanted) {
+        const key = offline.norm((c.sourceUrl ?? c.audioUrl)!);
+        if (prepared.current.has(key)) continue;
+        const url = await offline.blobUrlFor(key).catch(() => null);
+        if (!url) continue;
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        prepared.current.set(key, url);
+        setPrepRev((n) => n + 1);
+        if (engine.loadedChapterId() === c.id) engine.swapSource(c.id, url);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentId, siblings.next, downloaded]);
   useEffect(() => {
     engine.setHooks({
       getNext: () => {

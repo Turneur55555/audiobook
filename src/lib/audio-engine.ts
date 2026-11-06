@@ -59,17 +59,52 @@ let pendingStart: number | null = null;
  */
 let lastKnown = 0;
 
+/**
+ * Position demandée mais pas encore confirmée par le lecteur. Safari sur iPhone ignore parfois un
+ * saut demandé juste après le chargement (fichier pas encore prêt) : la lecture partait alors de 0:00,
+ * et ce 0:00 était enregistré puis synchronisé. On redemande le saut jusqu'à ce qu'il soit pris.
+ */
+let verifyTarget: number | null = null;
+let verifyTries = 0;
+
+function requestPosition(a: HTMLAudioElement, target: number) {
+  verifyTarget = target > 1 ? target : null;
+  verifyTries = 0;
+  a.currentTime = target;
+}
+
+/** Appelé à chaque étape du chargement / de la lecture : le saut a-t-il bien été pris ? */
+function verifyPosition(a: HTMLAudioElement) {
+  if (verifyTarget === null || !currentId) return;
+  if (Math.abs(a.currentTime - verifyTarget) < 3) {
+    verifyTarget = null;
+    return;
+  }
+  if (++verifyTries > 12) {
+    diag("reprise impossible", { ch: currentId.slice(0, 8), voulu: Math.round(verifyTarget), t: Math.round(a.currentTime) });
+    verifyTarget = null;
+    return;
+  }
+  if (a.readyState >= 1 && !a.seeking) {
+    diag("reprise forcée", { ch: currentId.slice(0, 8), voulu: Math.round(verifyTarget), t: Math.round(a.currentTime), essai: verifyTries });
+    a.currentTime = verifyTarget;
+  }
+}
+
 /** Apply pendingStart once the metadata is there (loadChapter, or a restore after a purge). */
 function applyWhenLoaded(a: HTMLAudioElement, id: string, fallback: number) {
   const onMeta = () => {
     a.removeEventListener("loadedmetadata", onMeta);
     if (currentId !== id) return;
     const s = pendingStart ?? fallback; // may have been moved by seek() meanwhile
-    a.currentTime = s > 0 && s < a.duration - 1 ? s : 0;
     pendingStart = null;
+    requestPosition(a, s > 0 && s < a.duration - 1 ? s : 0);
   };
   a.addEventListener("loadedmetadata", onMeta);
 }
+
+/** Adresse sans le repère de départ « #t= » (pour comparer deux sources). */
+const bare = (u: string) => u.split("#")[0]!;
 
 export function getAudio(): HTMLAudioElement {
   if (!el) {
@@ -78,17 +113,27 @@ export function getAudio(): HTMLAudioElement {
     const a0 = el;
     for (const ev of ["loadedmetadata", "durationchange", "play", "pause", "ratechange", "seeked", "playing", "waiting", "stalled", "ended"])
       a0.addEventListener(ev, () => updatePositionState(a0));
+    for (const ev of ["canplay", "canplaythrough", "playing", "seeked", "progress"]) a0.addEventListener(ev, () => verifyPosition(a0));
     a0.addEventListener("timeupdate", () => {
-      if (currentId && pendingStart === null && a0.currentTime > 0.5) lastKnown = a0.currentTime;
+      verifyPosition(a0);
+      if (currentId && pendingStart === null && verifyTarget === null && a0.currentTime > 0.5) lastKnown = a0.currentTime;
       if (Date.now() - lastPositionState > 2000) updatePositionState(a0);
+    });
+    a0.addEventListener("playing", () => {
+      // Filet de sécurité : le son joue mais la position de départ n'a pas été appliquée.
+      if (currentId && pendingStart !== null && a0.readyState >= 1) {
+        const s = pendingStart;
+        pendingStart = null;
+        requestPosition(a0, s);
+      }
     });
     a0.addEventListener("play", () => {
       // Back at 0:00 without having asked for it (audio dropped by iOS): return to where we were.
-      if (!currentId || pendingStart !== null) return;
+      if (!currentId || pendingStart !== null || verifyTarget !== null) return;
       const d = isFinite(a0.duration) && a0.duration > 0 ? a0.duration : Infinity;
       if (a0.currentTime < 1 && lastKnown > 3 && lastKnown < d - 3) {
         diag("position restaurée", { ch: currentId.slice(0, 8), à: Math.round(lastKnown), prêt: a0.readyState });
-        if (a0.readyState >= 1) a0.currentTime = lastKnown;
+        if (a0.readyState >= 1) requestPosition(a0, lastKnown);
         else {
           pendingStart = lastKnown;
           applyWhenLoaded(a0, currentId, lastKnown);
@@ -131,7 +176,8 @@ export const loadedChapterId = () => currentId;
 
 /** Real listening position of the loaded chapter (the requested start until metadata is loaded). */
 export function position(): number {
-  return pendingStart ?? getAudio().currentTime;
+  // Tant que le saut n'est pas confirmé, la « vraie » position est celle demandée (jamais un 0 parasite).
+  return pendingStart ?? verifyTarget ?? getAudio().currentTime;
 }
 
 export function loadChapter(id: string, url: string, start: number) {
@@ -139,13 +185,15 @@ export function loadChapter(id: string, url: string, start: number) {
   if (currentId === id) {
     // Same chapter: keep it, unless it is paused and a different source is now available
     // (the downloaded copy) — then switch to it without losing the place.
-    if (a.paused && a.src && a.src !== new URL(url, location.href).href) start = position();
+    if (a.paused && a.src && bare(a.src) !== bare(new URL(url, location.href).href)) start = position();
     else return;
   } else if (currentId) hooks?.onLeave(currentId, position());
   currentId = id;
   pendingStart = start;
   lastKnown = start;
-  a.src = url;
+  verifyTarget = null;
+  // « #t= » : Safari démarre lui-même à cette position (première sécurité, avant applyWhenLoaded).
+  a.src = start > 1 ? `${url}#t=${start.toFixed(1)}` : url;
   applyWhenLoaded(a, id, start);
 }
 
@@ -163,10 +211,34 @@ export function seek(seconds: number, knownDuration?: number): number {
   const d = isFinite(a.duration) && a.duration > 0 ? a.duration : knownDuration && knownDuration > 0 ? knownDuration : Infinity;
   const target = Math.max(0, Math.min(isFinite(seconds) ? seconds : 0, d - 0.5));
   lastKnown = target;
-  if (pendingStart !== null) pendingStart = target;
-  else a.currentTime = target;
+  // Fichier déjà chargé : on saute vraiment (sinon seule la barre bougeait, pas le son).
+  if (pendingStart !== null && a.readyState < 1) pendingStart = target;
+  else {
+    pendingStart = null;
+    requestPosition(a, target);
+  }
   return target;
 }
+
+/**
+ * Remplace la source de l'épisode chargé (copie locale prête) sans perdre la position,
+ * et relance la lecture si elle était en cours.
+ */
+export function swapSource(id: string, url: string) {
+  const a = getAudio();
+  if (currentId !== id || bare(a.src) === bare(url)) return;
+  const wasPlaying = !a.paused;
+  const pos = position();
+  pendingStart = pos;
+  verifyTarget = null;
+  a.src = pos > 1 ? `${url}#t=${pos.toFixed(1)}` : url;
+  applyWhenLoaded(a, id, pos);
+  diag("source locale", { ch: id.slice(0, 8), t: Math.round(pos), lecture: wasPlaying });
+  if (wasPlaying) a.play().catch((e) => diag("play refusé", { ch: id.slice(0, 8), err: (e as Error)?.name }));
+}
+
+/** Adresse actuellement chargée dans le lecteur (sans « #t= »). */
+export const currentSource = () => (el ? bare(el.src) : "");
 
 /** Move the already-loaded (paused) chapter to a position received from another device. */
 export function seekLoaded(id: string, seconds: number) {
@@ -200,5 +272,6 @@ export function stop() {
   if (currentId) hooks?.onLeave(currentId, position());
   currentId = null;
   pendingStart = null;
+  verifyTarget = null;
   lastKnown = 0;
 }

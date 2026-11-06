@@ -9,7 +9,8 @@ et en mode ordinateur.
 |---|---|
 | `playback` | enchaînement, fin de tome, minuteur « Fin du chap. », vitesse, précédent/suivant, sauts rapides, réécouter, reprise après rechargement, écran verrouillé |
 | `sync` | fusion à la liaison, lecture simultanée, épisodes écoutés, serveur en panne, lien invalide, horloge décalée de 3 min |
-| `offline` | tout télécharger / arrêter / reprendre, coupure, suppression, enchaînement sans réseau, retour du réseau |
+| `offline` | tout télécharger / arrêter / reprendre, coupure, suppression, ±15 s sur un épisode téléchargé, enchaînement sans réseau, retour du réseau |
+| `reopen` | fermer l'app (en pause ou en lecture) puis la rouvrir : reprise exacte, jamais de 0:00 enregistré, avec un faux Safari qui ignore les sauts précoces et ceux via le service worker |
 | `ui` | 60 épisodes, aucune largeur qui déborde de 320 à 1280 px, libellés accessibles |
 | `atelier` | import texte + MP3, mise à jour sans doublon, série vide, MP3 supprimé après un échec, compte non autorisé |
 

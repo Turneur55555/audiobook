@@ -111,6 +111,15 @@ export async function waitServer(up) {
 }
 
 // ---------- Navigateur ----------
+// Comme le soupçonne le retour terrain : Safari ignore les sauts dans un MP3 servi par le service worker.
+export const SW_NOT_SEEKABLE = () => {
+  const ct = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "currentTime");
+  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
+    configurable: true,
+    get() { return ct.get.call(this); },
+    set(v) { if (this.currentSrc.includes("offline-audio")) { window.__swSeekDropped = (window.__swSeekDropped || 0) + 1; return; } ct.set.call(this, v); },
+  });
+};
 export const IOS_INIT = () => {
   const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "preload");
   Object.defineProperty(HTMLMediaElement.prototype, "preload", { configurable: true, get() { return "none"; }, set() { d.set.call(this, "none"); } });
@@ -149,7 +158,7 @@ export const near = (t, s, tol = 3) => Math.abs(toSec(t) - s) <= tol;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const audioState = (page) => page.evaluate(() => {
   const a = window.__audio;
-  return a ? { t: a.currentTime, d: a.duration, paused: a.paused, ended: a.ended, src: a.currentSrc.includes("offline-audio") ? "offline" : a.currentSrc.split("/").pop(), rate: a.playbackRate } : null;
+  return a ? { t: a.currentTime, d: a.duration, paused: a.paused, ended: a.ended, src: a.currentSrc.startsWith("blob:") ? "local" : a.currentSrc.includes("offline-audio") ? "sw" : a.currentSrc.split("#")[0].split("/").pop(), rate: a.playbackRate } : null;
 });
 export const nowPlayingTitle = (page) => page.evaluate(() => navigator.mediaSession?.metadata?.title ?? null);
 export const btn = (page, name) => page.getByRole("button", { name, exact: typeof name === "string" }).first();

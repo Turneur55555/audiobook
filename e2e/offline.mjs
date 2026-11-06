@@ -1,5 +1,5 @@
 // Écoute hors ligne : téléchargements, arrêt, coupure, suppression, enchaînement sans réseau.
-import { APP, ROWS, audioState, begin, btn, check, makeDb, newPhone, noJsErrors, nowPlayingTitle, remote, seekSlider, sleep, step } from "./harness.mjs";
+import { APP, ROWS, SW_NOT_SEEKABLE, audioState, begin, btn, check, makeDb, newPhone, noJsErrors, nowPlayingTitle, remote, seekSlider, sleep, step } from "./harness.mjs";
 
 const panel = (page) => page.locator("section", { hasText: "Écouter sans réseau" }).last();
 const panelText = async (page) => (await panel(page).innerText()).replace(/\n/g, " | ");
@@ -8,7 +8,7 @@ const cached = (page) => page.evaluate(async () => (await (await caches.open("au
 export async function run(browser, { ios }) {
   begin(`Hors ligne (${ios ? "iPhone simulé" : "ordinateur"})`);
   const pg = await makeDb();
-  const { ctx, page, state } = await newPhone(browser, pg, {}, { ios });
+  const { ctx, page, state } = await newPhone(browser, pg, {}, { ios, init: SW_NOT_SEEKABLE });
   await page.goto(APP);
   await page.waitForFunction(() => !!navigator.serviceWorker?.controller, null, { timeout: 20000 });
   await page.getByText("Écouter sans réseau").waitFor();
@@ -58,7 +58,16 @@ export async function run(browser, { ios }) {
     const vis = await page.evaluate(() => { const r = document.querySelector("input[type=range]")?.getBoundingClientRect(); return r ? r.top >= 0 && r.bottom <= innerHeight : false; });
     check("après « Écouter », les commandes de lecture sont visibles à l'écran", vis);
     const s1 = await audioState(page);
-    check("épisode 1 joue hors ligne depuis la copie", s1 && !s1.paused && s1.src === "offline", JSON.stringify(s1));
+    check("épisode 1 joue hors ligne depuis la copie locale", s1 && !s1.paused && s1.src === "local", JSON.stringify(s1));
+    const b0 = (await audioState(page)).t;
+    for (let i = 0; i < 3; i++) await btn(page, "15 s ↻").click();
+    await sleep(800);
+    const b1 = (await audioState(page)).t;
+    check("±15 s agit vraiment sur le son d'un épisode téléchargé (pas seulement la barre)", Math.abs(b1 - b0 - 45) <= 3, `${b0.toFixed(1)} → ${b1.toFixed(1)}`);
+    await btn(page, "↺ 15 s").click();
+    await sleep(800);
+    const b2 = (await audioState(page)).t;
+    check("−15 s aussi", Math.abs(b1 - b2 - 15) <= 3, `${b1.toFixed(1)} → ${b2.toFixed(1)}`);
     await seekSlider(page, 294);
     await page.waitForFunction(() => navigator.mediaSession?.metadata?.title === "Brume-Aval", null, { timeout: 20000 }).catch(async (e) => {
       console.log("JOURNAL:\n" + (JSON.parse(await page.evaluate(() => localStorage.getItem("audio-diag")) || "[]")).slice(-12).map((x) => `  ${x.ev} t=${x.t} d=${x.d} src=${x.src} ${x.suivant ?? ""} ${x.err ?? ""}`).join("\n"));
@@ -67,7 +76,7 @@ export async function run(browser, { ios }) {
     });
     await sleep(1500);
     const s2 = await audioState(page);
-    check("hors ligne : passe tout seul à l'épisode 2 téléchargé", s2 && !s2.paused && s2.src === "offline", JSON.stringify(s2));
+    check("hors ligne : passe tout seul à l'épisode 2 téléchargé (copie locale)", s2 && !s2.paused && s2.src === "local", JSON.stringify(s2));
     await page.waitForFunction(() => window.__audio?.paused, null, { timeout: 40000 });
     await sleep(1500);
     const s3 = await audioState(page);
@@ -105,7 +114,7 @@ export async function run(browser, { ios }) {
     await btn(page, /▶ Lire/).click();
     await sleep(1500);
     const s = await audioState(page);
-    check("à la reprise, la copie téléchargée est utilisée, à la même position", s.src === "offline" && Math.abs(s.t - after.t) < 4, JSON.stringify(s));
+    check("à la reprise, la copie téléchargée est utilisée, à la même position", ["local", "sw"].includes(s.src) && Math.abs(s.t - after.t) < 4, JSON.stringify(s));
     await btn(page, /Pause/).click();
   });
 

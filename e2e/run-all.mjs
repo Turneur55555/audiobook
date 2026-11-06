@@ -3,7 +3,7 @@
 //   APP=https://… node run-all.mjs → contre un site déjà en ligne (données Supabase simulées)
 import { chromium, startServer, stopServer, summary } from "./harness.mjs";
 
-const SUITES = (process.env.SUITES || "playback,sync,offline,ui,atelier").split(",");
+const SUITES = (process.env.SUITES || "playback,sync,offline,reopen,ui,atelier").split(",");
 const MODES = (process.env.MODES || "ios,desktop").split(",");
 
 await startServer();

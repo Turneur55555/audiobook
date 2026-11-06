@@ -18,7 +18,20 @@ export const norm = (url: string) => {
 };
 
 export const offlineUrl = (src: string) => `${OFFLINE_PATH}?src=${encodeURIComponent(src)}`;
-export const isOfflineUrl = (u?: string) => !!u && u.startsWith(OFFLINE_PATH);
+/** Lisible sans réseau : copie servie par le service worker, ou copie locale en mémoire (blob:). */
+export const isOfflineUrl = (u?: string) => !!u && (u.startsWith(OFFLINE_PATH) || u.startsWith("blob:"));
+
+/**
+ * Copie locale d'un épisode téléchargé, sous forme d'adresse blob:. Safari sur iPhone ne permet pas
+ * toujours d'avancer/reculer dans un fichier servi par le service worker ; dans un blob, si.
+ */
+export async function blobUrlFor(src: string): Promise<string | null> {
+  if (!canDownload()) return null;
+  const res = await (await caches.open(AUDIO_CACHE)).match(norm(src));
+  if (!res) return null;
+  const blob = await res.blob();
+  return URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: "audio/mpeg" }));
+}
 
 /** Le service worker contrôle-t-il la page ? (sinon /offline-audio n'existerait pas côté serveur) */
 export const swControls = () => hasWindow() && !!navigator.serviceWorker?.controller;
