@@ -4,7 +4,11 @@ import { slugify, uniqueName, type Chapter, type Lang } from "./chapters";
 // External Supabase project. The publishable key is meant to live in front-end code.
 export const SUPABASE_URL = "https://hoyhnxrcmjdbmsofniub.supabase.co";
 export const SUPABASE_KEY = "sb_publishable_Z-ee5l9Ut6_CX6NJ4pSIiA_N3AdPYGE";
-export const OWNER_EMAIL = "attal.nathan@gmail.com";
+/**
+ * SHA-256 de l'adresse de l'auteur (minuscules) : l'adresse n'apparaît plus en clair dans le code public.
+ * Ce contrôle ne sert qu'à l'affichage ; la vraie protection, ce sont les règles d'accès Supabase.
+ */
+const OWNER_EMAIL_SHA256 = "934f08d8b4cc65ff0ea1a3e2e2b1a1facd87a7b19362d2cf87b5f97145e4b3b0";
 export const BUCKET = "audiobook";
 
 let client: SupabaseClient | null = null;
@@ -13,7 +17,12 @@ export function sb() {
   return (client ??= createClient(SUPABASE_URL, SUPABASE_KEY));
 }
 
-export const isOwnerEmail = (e?: string | null) => !!e && e.trim().toLowerCase() === OWNER_EMAIL;
+export async function isOwnerEmail(e?: string | null): Promise<boolean> {
+  if (!e?.trim()) return false;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(e.trim().toLowerCase()));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex === OWNER_EMAIL_SHA256;
+}
 
 interface Row {
   id: string;

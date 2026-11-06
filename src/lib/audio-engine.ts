@@ -87,10 +87,22 @@ export function loadChapter(id: string, url: string, start: number) {
   const onMeta = () => {
     a.removeEventListener("loadedmetadata", onMeta);
     if (currentId !== id) return;
-    a.currentTime = start > 0 && start < a.duration - 1 ? start : 0;
+    const s = pendingStart ?? start; // may have been moved by seekLoaded() meanwhile
+    a.currentTime = s > 0 && s < a.duration - 1 ? s : 0;
     pendingStart = null;
   };
   a.addEventListener("loadedmetadata", onMeta);
+}
+
+/** True while the shared element is actually playing a chapter. */
+export const isPlaying = () => !!el && !!currentId && !el.paused;
+
+/** Move the already-loaded (paused) chapter to a position received from another device. */
+export function seekLoaded(id: string, seconds: number) {
+  if (currentId !== id || !el) return;
+  if (pendingStart !== null) pendingStart = seconds;
+  else if (isFinite(el.duration)) el.currentTime = Math.max(0, Math.min(seconds, el.duration - 1));
+  else el.currentTime = Math.max(0, seconds);
 }
 
 export function playChapter(id: string, url: string, start: number) {

@@ -3,10 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Atelier } from "@/components/audiobook/Atelier";
 import { Library } from "@/components/audiobook/Library";
 import { Player } from "@/components/audiobook/Player";
+import { SyncPanel } from "@/components/audiobook/SyncPanel";
 import * as db from "@/lib/audiobook-db";
 import * as engine from "@/lib/audio-engine";
 import { groupChapters, type Chapter } from "@/lib/chapters";
 import { deleteChapterRemote, fetchChapters, frError, isOwnerEmail, sb, updateChapter } from "@/lib/supabase";
+import * as sync from "@/lib/sync";
+
+const PUSH_DELAY = 10_000;
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -41,19 +45,31 @@ function Index() {
   const stoppedAtEnd = useRef(false);
   const ref = useRef(chapters);
   ref.current = chapters;
-  const isOwner = isOwnerEmail(email);
+  const [isOwner, setIsOwner] = useState(false);
+  const [syncState, setSyncState] = useState<{ code: string | null; at: number | null; error: string }>({ code: null, at: null, error: "" });
+  const syncCode = useRef<string | null>(null);
+  const pending = useRef(new Map<string, db.LocalPos>());
+  const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPull = useRef(0);
+  /** Bumped to remount a text (speech) player whose position was changed by another device. */
+  const [playerRev, setPlayerRev] = useState(0);
 
   useEffect(() => {
-    const check = (e?: string | null) => {
-      if (e && !isOwnerEmail(e)) {
+    const check = async (e?: string | null) => {
+      const ok = await isOwnerEmail(e);
+      if (e && !ok) {
         setNotice("Ce compte n’est pas autorisé à déposer des chapitres. Vous avez été déconnecté.");
         void sb().auth.signOut();
         setEmail(null);
-      } else setEmail(e ?? null);
+        setIsOwner(false);
+      } else {
+        setEmail(e ?? null);
+        setIsOwner(ok);
+      }
     };
     void sb().auth.getSession().then(({ data }) => check(data.session?.user.email));
     const { data } = sb().auth.onAuthStateChange((ev, s) => {
-      if (ev === "SIGNED_IN" || ev === "SIGNED_OUT" || ev === "USER_UPDATED") check(s?.user.email);
+      if (ev === "SIGNED_IN" || ev === "SIGNED_OUT" || ev === "USER_UPDATED") void check(s?.user.email);
     });
     return () => data.subscription.unsubscribe();
   }, []);
@@ -68,12 +84,14 @@ function Index() {
           const p = pm.get(c.id);
           return p ? { ...c, position: p.position, done: p.done, duration: c.duration ?? p.duration } : c;
         });
+        ref.current = merged;
         setChapters(merged);
         if (last && merged.some((c) => c.id === last)) setCurrentId(last);
       } catch (e) {
         setError(`Impossible de charger la bibliothèque : ${frError(e)}`);
       }
       setLoaded(true);
+      await initSync();
     })();
   }, []);
 
@@ -83,8 +101,140 @@ function Index() {
     const next = { ...cur, ...patch };
     ref.current = ref.current.map((c) => (c.id === id ? next : c));
     setChapters(ref.current);
-    if (LOCAL.some((k) => k in patch))
-      void db.putPosition({ id, position: next.position, duration: next.duration, done: next.done, updatedAt: Date.now() });
+    // Ne date la position « maintenant » que si elle a vraiment changé : sinon, une simple mise en
+    // arrière-plan (qui ré-enregistre la même position) écraserait l'écoute faite sur un autre appareil.
+    const changed =
+      ("position" in patch && Math.abs((patch.position ?? 0) - cur.position) >= 0.5) ||
+      ("done" in patch && !!patch.done !== !!cur.done) ||
+      ("duration" in patch && patch.duration !== cur.duration);
+    if (LOCAL.some((k) => k in patch) && changed) {
+      const pos: db.LocalPos = { id, position: next.position, duration: next.duration, done: next.done, updatedAt: Date.now() };
+      void db.putPosition(pos);
+      pending.current.set(id, pos);
+      schedulePush();
+    }
+  }, []);
+
+  // ---------- Synchronisation entre appareils ----------
+  async function flushPush() {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = null;
+    const code = syncCode.current;
+    if (!code || !pending.current.size) return;
+    const items = [...pending.current.values()];
+    pending.current.clear();
+    try {
+      await sync.push(sb(), code, items);
+      setSyncState((s) => ({ ...s, at: Date.now(), error: "" }));
+    } catch (e) {
+      // On remet en attente ce qui n'a pas été remplacé entre-temps.
+      for (const p of items) if (!pending.current.has(p.id)) pending.current.set(p.id, p);
+      setSyncState((s) => ({ ...s, error: sync.syncErrorText(e) }));
+      if (!pushTimer.current) pushTimer.current = setTimeout(() => void flushPush(), 60_000);
+    }
+  }
+  function schedulePush() {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return void flushPush();
+    if (!pushTimer.current) pushTimer.current = setTimeout(() => void flushPush(), PUSH_DELAY);
+  }
+
+  /** Applique les positions plus récentes reçues d'un autre appareil, sans couper une lecture en cours. */
+  function applyRemote(list: db.LocalPos[]) {
+    const known = new Map(ref.current.map((c) => [c.id, c]));
+    const speaking = typeof window !== "undefined" && !!window.speechSynthesis?.speaking;
+    const applied: db.LocalPos[] = [];
+    for (const r of list) {
+      const c = known.get(r.id);
+      if (!c) continue;
+      const playingThis = (engine.loadedChapterId() === r.id && engine.isPlaying()) || (speaking && r.id === currentIdRef.current);
+      if (playingThis) continue;
+      known.set(r.id, { ...c, position: r.position, done: r.done, duration: c.duration ?? r.duration });
+      void db.putPosition(r);
+      pending.current.delete(r.id);
+      if (engine.loadedChapterId() === r.id) engine.seekLoaded(r.id, r.position);
+      else if (r.id === currentIdRef.current && !c.audioUrl) setPlayerRev((n) => n + 1);
+      applied.push(r);
+    }
+    if (!applied.length) return applied;
+    ref.current = ref.current.map((c) => known.get(c.id) ?? c);
+    setChapters(ref.current);
+    return applied;
+  }
+
+  async function syncNow() {
+    const code = syncCode.current;
+    if (!code) return;
+    lastPull.current = Date.now();
+    try {
+      const [remote, local] = await Promise.all([sync.pull(sb(), code), db.getAllPositions()]);
+      const { toApply, toPush } = sync.mergePositions(local, remote);
+      const applied = applyRemote(toApply);
+      // Reprendre là où on s'est arrêté sur l'autre appareil, si rien n'est en lecture ici.
+      const newest = sync.latest(applied);
+      const localNewest = sync.latest(local);
+      if (newest && (!localNewest || newest.updatedAt > localNewest.updatedAt) && !engine.isPlaying()
+        && !(typeof window !== "undefined" && window.speechSynthesis?.speaking)) {
+        setCurrentId(newest.id);
+        void db.setMeta("lastId", newest.id);
+      }
+      for (const p of toPush) if (!pending.current.has(p.id)) pending.current.set(p.id, p);
+      await flushPush();
+      setSyncState((s) => ({ ...s, at: Date.now(), error: "" }));
+    } catch (e) {
+      setSyncState((s) => ({ ...s, error: sync.syncErrorText(e) }));
+    }
+  }
+
+  async function initSync() {
+    const fromLink = sync.normalizeCode(window.location.hash);
+    let code = fromLink ?? sync.normalizeCode(await db.getMeta<string>("syncCode"));
+    if (!code) code = sync.newSyncCode();
+    await db.setMeta("syncCode", code);
+    if (fromLink) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+      setNotice("Cet appareil est relié : tes positions d’écoute se synchronisent maintenant avec ton autre appareil.");
+    }
+    syncCode.current = code;
+    setSyncState((s) => ({ ...s, code }));
+    await syncNow();
+  }
+
+  async function linkTo(code: string) {
+    await flushPush();
+    syncCode.current = code;
+    await db.setMeta("syncCode", code);
+    setSyncState({ code, at: null, error: "" });
+    await syncNow();
+  }
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "hidden") void flushPush();
+      else if (Date.now() - lastPull.current > 5000) void syncNow();
+    };
+    const onFocus = () => { if (Date.now() - lastPull.current > 5000) void syncNow(); };
+    const onHide = () => void flushPush();
+    const onHash = () => {
+      const c = sync.normalizeCode(window.location.hash);
+      if (!c) return;
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+      if (c !== syncCode.current) {
+        void linkTo(c);
+        setNotice("Cet appareil est relié : tes positions d’écoute se synchronisent maintenant avec ton autre appareil.");
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onFocus);
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("hashchange", onHash);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onFocus);
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("hashchange", onHash);
+    };
   }, []);
 
   const play = useCallback((id: string) => {
@@ -96,6 +246,8 @@ function Index() {
     void db.setMeta("lastId", id);
   }, []);
 
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
   const current = chapters.find((c) => c.id === currentId) ?? null;
   const siblings = useMemo(() => {
     if (!current) return { prev: undefined, next: undefined };
@@ -159,6 +311,8 @@ function Index() {
     if (!f) return;
     try {
       const ps = await db.importPositions(f);
+      for (const p of ps) pending.current.set(p.id, p);
+      void flushPush();
       const pm = new Map(ps.map((p) => [p.id, p]));
       setChapters((o) => o.map((c) => (pm.has(c.id) ? { ...c, position: pm.get(c.id)!.position, done: pm.get(c.id)!.done } : c)));
       setNotice(`${ps.length} position(s) de lecture restaurée(s).`);
@@ -219,24 +373,15 @@ function Index() {
                   setChapters((o) => o.filter((x) => x.id !== c.id));
                 } catch (e) { alert(`Suppression impossible : ${frError(e)}`); }
               }} />
-            <section className="mt-12 space-y-3">
-              <h2 className="font-display text-xl">Mes positions de lecture</h2>
-              <p className="text-muted-foreground">Elles restent sur cet appareil. Exportez-les pour les transférer.</p>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={doExport} className={`${big} bg-secondary`}>Exporter</button>
-                <label className={`${big} flex cursor-pointer items-center justify-center bg-secondary`}>
-                  Importer
-                  <input type="file" accept="application/json,.json" hidden onChange={(e) => { void doImport(e.target.files?.[0]); e.target.value = ""; }} />
-                </label>
-              </div>
-            </section>
+            <SyncPanel code={syncState.code} lastSync={syncState.at} error={syncState.error}
+              onLink={linkTo} onExport={() => void doExport()} onImport={(f) => void doImport(f)} />
           </>
         ) : !current ? (
           <p className="text-lg text-muted-foreground">Choisissez un chapitre dans la bibliothèque.</p>
         ) : null}
         {current && (
           <div className={tab === "lecture" ? "" : "contents"}>
-            <Player chapter={current} token={token} expanded={tab === "lecture"} onUpdate={update}
+            <Player key={playerRev} chapter={current} token={token} expanded={tab === "lecture"} onUpdate={update}
               sleepAtEnd={sleepAtEnd} setSleepAtEnd={setSleepAtEnd}
               onEnded={onEnded} onPrev={onPrev} onNext={onNext} onOpen={() => setTab("lecture")} />
           </div>
@@ -259,7 +404,7 @@ function AuthorLogin({ email, onDone }: { email: string | null; onDone: () => vo
   const [busy, setBusy] = useState(false);
   if (email) return <button onClick={onDone} className={`${big} bg-primary text-primary-foreground`}>Ouvrir l’Atelier</button>;
   async function send() {
-    if (!isOwnerEmail(v)) return setMsg("Cette adresse n’a pas accès à l’espace auteur.");
+    if (!(await isOwnerEmail(v))) return setMsg("Cette adresse n’a pas accès à l’espace auteur.");
     setBusy(true);
     const { error } = await sb().auth.signInWithOtp({ email: v.trim(), options: { emailRedirectTo: window.location.origin } });
     setBusy(false);

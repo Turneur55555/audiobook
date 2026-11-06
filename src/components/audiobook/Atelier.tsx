@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { audioDuration } from "@/lib/audiobook-db";
-import { baseName, cleanTitle, episodeFrom, findSameEpisode, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
+import { baseName, cleanTitle, episodeFrom, findSameEpisode, mostCommonSeries, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
 import { frError, insertChapter, removeAudioQuietly, uniqueAudioPath, updateChapterContent, uploadAudio } from "@/lib/supabase";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
@@ -10,7 +10,7 @@ const isAudio = (f: File) => f.type.startsWith("audio/") || /\.(mp3|m4a)$/i.test
 interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | "erreur"; updated?: boolean; error?: string }
 
 export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void }) {
-  const [series, setSeries] = useState("");
+  const [series, setSeries] = useState(() => mostCommonSeries(p.chapters));
   const [lang, setLang] = useState<Lang>("fr");
   const [title, setTitle] = useState("");
   const [episode, setEpisode] = useState("");
@@ -49,23 +49,35 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
       await uploadAudio(audio_path, item.audio, onPct);
     }
     onPct(1);
-    if (!existing) {
-      const chapter = await insertChapter({ title: t, episode: ep, series: series.trim(), lang, body, audio_path, duration });
-      return { chapter, updated: false };
+    try {
+      if (!existing) {
+        const chapter = await insertChapter({ title: t, episode: ep, series: series.trim(), lang, body, audio_path, duration });
+        return { chapter, updated: false };
+      }
+      const chapter = await updateChapterContent(existing.id, {
+        title: item.text ? t : existing.title,
+        episode: ep,
+        body: body || existing.text,
+        audio_path: audio_path ?? existing.audioPath ?? null,
+        duration: audio_path ? duration : existing.duration ?? null,
+      });
+      if (audio_path && existing.audioPath) void removeAudioQuietly(existing.audioPath);
+      return { chapter, updated: true };
+    } catch (e) {
+      // L'épisode n'a pas été enregistré : on ne laisse pas son MP3 orphelin dans le stockage.
+      if (audio_path) void removeAudioQuietly(audio_path);
+      throw e;
     }
-    const chapter = await updateChapterContent(existing.id, {
-      title: item.text ? t : existing.title,
-      episode: ep,
-      body: body || existing.text,
-      audio_path: audio_path ?? existing.audioPath ?? null,
-      duration: audio_path ? duration : existing.duration ?? null,
-    });
-    if (audio_path && existing.audioPath) void removeAudioQuietly(existing.audioPath);
-    return { chapter, updated: true };
   }
 
+  const noSeries = () => {
+    if (series.trim()) return false;
+    setMsg("Indique d’abord la série dans « Série et langue » (par exemple « Tome 1 »), puis relance l’import.");
+    return true;
+  };
+
   async function importFiles(list: FileList | null) {
-    if (!list?.length) return;
+    if (!list?.length || noSeries()) return;
     setBusy(true);
     setMsg("");
     const byName = new Map<string, { text?: File; audio?: File }>();
@@ -103,6 +115,7 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
 
   async function addOne() {
     if (!text.trim() && !audio) return setMsg("Ajoutez un texte ou un fichier audio.");
+    if (noSeries()) return;
     setBusy(true);
     setMsg("");
     setJobs(audio ? [{ name: audio.name, pct: 0, status: "envoi" }] : []);

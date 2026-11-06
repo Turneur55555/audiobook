@@ -63,6 +63,26 @@ export function stripHeading(text: string): string {
   return text.replace(/^\s*#+[^\n]*\n+/, "").trim();
 }
 
+/**
+ * Retire la première ligne du texte si c'est le titre de l'épisode (« Dernier de 480 »,
+ * « # Épisode 1 — Dernier de 480 »…), pour ne pas l'afficher deux fois.
+ */
+export function withoutTitleLine(text: string, title: string): string {
+  const m = text.match(/^\s*([^\n]*)(\n|$)/);
+  if (!m) return text;
+  const norm = (s: string) =>
+    s.replace(/^[#*\s]+|[*\s.]+$/g, "").replace(/^[ée]pisode\s*\d+\s*[.:—–-]+\s*/i, "").trim().toLowerCase();
+  const first = norm(m[1]!);
+  return first && first === norm(title) ? text.slice(m[0].length).trimStart() : text;
+}
+
+/** Série la plus fréquente (pour pré-remplir l'Atelier et éviter un import sans série). */
+export function mostCommonSeries(cs: Chapter[]): string {
+  const n = new Map<string, number>();
+  for (const c of cs) if (c.series.trim()) n.set(c.series.trim(), (n.get(c.series.trim()) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+}
+
 /** Même tome (sans tenir compte de la casse), même langue, même numéro d'épisode. */
 export function findSameEpisode(cs: Chapter[], series: string, lang: Lang, episode: number | null): Chapter | undefined {
   if (episode === null) return undefined;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { fmtTime, splitSentences, wordCount, type Chapter } from "@/lib/chapters";
+import { fmtTime, splitSentences, withoutTitleLine, wordCount, type Chapter } from "@/lib/chapters";
 import { getMeta, setMeta } from "@/lib/audiobook-db";
 import * as engine from "@/lib/audio-engine";
 
@@ -370,7 +370,7 @@ function AudioPlayer(p: EngineProps) {
       <Transport playing={playing} toggle={toggle} back={() => seek(-15)} fwd={() => seek(15)}
         backLabel="↺ 15 s" fwdLabel="15 s ↻" onPrev={p.onPrev} onNext={p.onNext} />
       {p.extras}
-      {c.text && <p className="whitespace-pre-wrap leading-relaxed text-muted-foreground">{c.text}</p>}
+      {c.text && <p className="whitespace-pre-wrap leading-relaxed text-muted-foreground">{withoutTitleLine(c.text, c.title)}</p>}
     </div>
   );
 }
@@ -387,6 +387,8 @@ function SpeechPlayer(p: EngineProps & { voice?: SpeechSynthesisVoice | undefine
   const cfg = useRef({ voice: p.voice, rate: p.rate, sentences, onEnded: p.onEnded });
   cfg.current = { voice: p.voice, rate: p.rate, sentences, onEnded: p.onEnded };
   const curEl = useRef<HTMLSpanElement>(null);
+  const boxEl = useRef<HTMLDivElement>(null);
+  const userScrollAt = useRef(0);
 
   const setPos = (i: number) => {
     idxRef.current = i;
@@ -465,8 +467,13 @@ function SpeechPlayer(p: EngineProps & { voice?: SpeechSynthesisVoice | undefine
       back: () => jump(idxRef.current - 1), fwd: () => jump(idxRef.current + 1),
     });
   }, [c.title, c.series, c.episode, p.onPrev, p.onNext, n]);
+  // Fait défiler uniquement le cadre du texte (jamais toute la page, qui masquait les commandes),
+  // et laisse la main 8 s quand l'utilisateur fait défiler lui-même.
   useEffect(() => {
-    if (p.expanded) curEl.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const box = boxEl.current;
+    const el = curEl.current;
+    if (!p.expanded || !box || !el || Date.now() - userScrollAt.current < 8000) return;
+    box.scrollTo({ top: Math.max(0, el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2), behavior: "smooth" });
   }, [idx, p.expanded]);
 
   const pct = n ? idx / n : 0;
@@ -487,7 +494,8 @@ function SpeechPlayer(p: EngineProps & { voice?: SpeechSynthesisVoice | undefine
       <Transport playing={playing} toggle={toggle} back={() => jump(idxRef.current - 1)} fwd={() => jump(idxRef.current + 1)}
         backLabel="↺ Phrase" fwdLabel="Phrase ↻" onPrev={p.onPrev} onNext={p.onNext} />
       {p.extras}
-      <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-border bg-card p-4 text-lg leading-relaxed">
+      <div ref={boxEl} onWheel={() => { userScrollAt.current = Date.now(); }} onTouchMove={() => { userScrollAt.current = Date.now(); }}
+        className="relative max-h-[60vh] overflow-y-auto rounded-xl border border-border bg-card p-4 text-lg leading-relaxed">
         {sentences.map((s, i) => (
           <span
             key={i}
