@@ -53,6 +53,23 @@ let hooks: EngineHooks | null = null;
  * for a long time: without this, leaving the page would overwrite the saved position with 0.
  */
 let pendingStart: number | null = null;
+/**
+ * Last real position of the loaded chapter. After a long pause iOS may drop the audio from memory:
+ * the element then comes back at 0:00 and « Lire » would restart the episode (and sync that 0).
+ */
+let lastKnown = 0;
+
+/** Apply pendingStart once the metadata is there (loadChapter, or a restore after a purge). */
+function applyWhenLoaded(a: HTMLAudioElement, id: string, fallback: number) {
+  const onMeta = () => {
+    a.removeEventListener("loadedmetadata", onMeta);
+    if (currentId !== id) return;
+    const s = pendingStart ?? fallback; // may have been moved by seek() meanwhile
+    a.currentTime = s > 0 && s < a.duration - 1 ? s : 0;
+    pendingStart = null;
+  };
+  a.addEventListener("loadedmetadata", onMeta);
+}
 
 export function getAudio(): HTMLAudioElement {
   if (!el) {
@@ -62,7 +79,21 @@ export function getAudio(): HTMLAudioElement {
     for (const ev of ["loadedmetadata", "durationchange", "play", "pause", "ratechange", "seeked", "playing", "waiting", "stalled", "ended"])
       a0.addEventListener(ev, () => updatePositionState(a0));
     a0.addEventListener("timeupdate", () => {
+      if (currentId && pendingStart === null && a0.currentTime > 0.5) lastKnown = a0.currentTime;
       if (Date.now() - lastPositionState > 2000) updatePositionState(a0);
+    });
+    a0.addEventListener("play", () => {
+      // Back at 0:00 without having asked for it (audio dropped by iOS): return to where we were.
+      if (!currentId || pendingStart !== null) return;
+      const d = isFinite(a0.duration) && a0.duration > 0 ? a0.duration : Infinity;
+      if (a0.currentTime < 1 && lastKnown > 3 && lastKnown < d - 3) {
+        diag("position restaurée", { ch: currentId.slice(0, 8), à: Math.round(lastKnown), prêt: a0.readyState });
+        if (a0.readyState >= 1) a0.currentTime = lastKnown;
+        else {
+          pendingStart = lastKnown;
+          applyWhenLoaded(a0, currentId, lastKnown);
+        }
+      }
     });
     // Journal de lecture (diagnostic sur iPhone, où l'on ne peut pas ouvrir la console).
     for (const ev of ["play", "playing", "pause", "waiting", "stalled", "ended", "error", "loadedmetadata"])
@@ -113,15 +144,9 @@ export function loadChapter(id: string, url: string, start: number) {
   } else if (currentId) hooks?.onLeave(currentId, position());
   currentId = id;
   pendingStart = start;
+  lastKnown = start;
   a.src = url;
-  const onMeta = () => {
-    a.removeEventListener("loadedmetadata", onMeta);
-    if (currentId !== id) return;
-    const s = pendingStart ?? start; // may have been moved by seekLoaded() meanwhile
-    a.currentTime = s > 0 && s < a.duration - 1 ? s : 0;
-    pendingStart = null;
-  };
-  a.addEventListener("loadedmetadata", onMeta);
+  applyWhenLoaded(a, id, start);
 }
 
 /** True while the shared element is actually playing a chapter. */
@@ -137,6 +162,7 @@ export function seek(seconds: number, knownDuration?: number): number {
   const a = getAudio();
   const d = isFinite(a.duration) && a.duration > 0 ? a.duration : knownDuration && knownDuration > 0 ? knownDuration : Infinity;
   const target = Math.max(0, Math.min(isFinite(seconds) ? seconds : 0, d - 0.5));
+  lastKnown = target;
   if (pendingStart !== null) pendingStart = target;
   else a.currentTime = target;
   return target;
@@ -174,4 +200,5 @@ export function stop() {
   if (currentId) hooks?.onLeave(currentId, position());
   currentId = null;
   pendingStart = null;
+  lastKnown = 0;
 }

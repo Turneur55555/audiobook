@@ -308,7 +308,7 @@ function AudioPlayer(p: EngineProps) {
     };
     const onTime = () => {
       if (!mine()) return;
-      setT(a.currentTime);
+      setT(engine.position()); // position voulue tant que le fichier n'est pas (re)chargé
       const se = live.current.sleepEnd;
       if (se && Date.now() >= se) {
         a.pause();

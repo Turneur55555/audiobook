@@ -38,3 +38,14 @@ describe("seeking before the audio is loaded (iPhone)", () => {
     engine.stop();
   });
 });
+
+describe("seek keeps track of the intended position", () => {
+  it("is not lost when the chapter is reloaded at the same place", () => {
+    engine.setHooks({ getNext: () => null, onLeave: () => {}, shouldStopAtEnd: () => false, onChapterEnded: () => {} });
+    engine.loadChapter("e", "https://example.com/e.mp3", 200);
+    expect(engine.seek(250, 600)).toBe(250);
+    expect(engine.position()).toBe(250);
+    engine.stop();
+    expect(engine.position()).toBe(0);
+  });
+});
