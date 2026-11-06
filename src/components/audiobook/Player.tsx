@@ -256,6 +256,10 @@ function AudioPlayer(p: EngineProps) {
   const url = c.audioUrl!;
   const [t, setT] = useState(c.position);
   const [dur, setDur] = useState(c.duration ?? 0);
+  // Durée connue : celle du fichier une fois chargé, sinon celle enregistrée (iPhone avant la 1re lecture).
+  const total = dur > 0 && isFinite(dur) ? dur : c.duration ?? 0;
+  const totalRef = useRef(total);
+  totalRef.current = total;
   const [playing, setPlaying] = useState(false);
   const lastSave = useRef(0);
   const live = useRef(p);
@@ -273,10 +277,15 @@ function AudioPlayer(p: EngineProps) {
   };
   const pause = () => engine.getAudio().pause();
   const toggle = () => (playing ? pause() : play());
-  const seek = (d: number) => {
-    const a = engine.getAudio();
-    a.currentTime = Math.max(0, Math.min((a.duration || 0) - 0.1, a.currentTime + d));
+  /** Aller à une position, même si l'iPhone n'a pas encore chargé le fichier (avant la 1re lecture). */
+  const seekTo = (s: number) => {
+    engine.loadChapter(c.id, url, c.position); // sans effet si l'épisode est déjà chargé
+    const target = engine.seek(s, totalRef.current);
+    setT(target);
+    lastSave.current = Date.now();
+    live.current.onUpdate(c.id, { position: target, updatedAt: Date.now() });
   };
+  const seek = (d: number) => seekTo((mine() ? engine.position() : c.position) + d);
 
   useEffect(() => {
     engine.setRate(p.rate);
@@ -284,13 +293,16 @@ function AudioPlayer(p: EngineProps) {
   useEffect(() => {
     const a = engine.getAudio();
     engine.loadChapter(c.id, url, c.position);
+    // Nouvel épisode dans le même lecteur : repartir de ses propres position et durée.
+    setT(engine.position());
+    setDur(c.duration ?? 0);
     setPlaying(!a.paused);
     if (isFinite(a.duration) && a.duration > 0) {
       setDur(a.duration);
       if (a.duration !== c.duration) live.current.onUpdate(c.id, { duration: a.duration });
     }
     const onMeta = () => {
-      if (!mine()) return;
+      if (!mine() || !isFinite(a.duration) || a.duration <= 0) return;
       setDur(a.duration);
       if (isFinite(a.duration) && a.duration !== live.current.chapter.duration) live.current.onUpdate(c.id, { duration: a.duration });
     };
@@ -339,11 +351,11 @@ function AudioPlayer(p: EngineProps) {
   useEffect(() => {
     setupMediaSession(c, {
       play, pause, prev: p.onPrev, next: p.onNext, back: () => seek(-15), fwd: () => seek(15),
-      seek: (s) => { engine.getAudio().currentTime = s; },
+      seek: (s) => seekTo(s),
     });
   }, [c.id, c.title, c.series, c.episode, p.onPrev, p.onNext]);
 
-  const pct = dur ? t / dur : 0;
+  const pct = total ? t / total : 0;
 
   if (!p.expanded) return <MiniBar c={c} pct={pct} playing={playing} toggle={toggle} onOpen={p.onOpen} />;
   return (
@@ -353,18 +365,16 @@ function AudioPlayer(p: EngineProps) {
         <input
           type="range"
           min={0}
-          max={dur || 0}
+          max={total || 0}
           step={1}
-          value={t}
-          onChange={(e) => {
-            engine.getAudio().currentTime = +e.target.value;
-          }}
+          value={Math.min(t, total || t)}
+          onChange={(e) => seekTo(+e.target.value)}
           className="w-full accent-primary h-8"
           aria-label="Position"
         />
         <div className="flex justify-between text-sm text-muted-foreground">
           <span>{fmtTime(t)}</span>
-          <span>-{fmtTime(dur - t)}</span>
+          <span>-{fmtTime(Math.max(0, total - t))}</span>
         </div>
       </div>
       <Transport playing={playing} toggle={toggle} back={() => seek(-15)} fwd={() => seek(15)}

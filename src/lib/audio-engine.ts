@@ -101,12 +101,25 @@ export function loadChapter(id: string, url: string, start: number) {
 /** True while the shared element is actually playing a chapter. */
 export const isPlaying = () => !!el && !!currentId && !el.paused;
 
+/**
+ * Go to a position in the loaded chapter and return the position actually requested.
+ * On iPhone, Safari loads nothing before the first play: duration and currentTime are unknown
+ * (NaN / 0) and a currentTime set now would be lost. The target then becomes the start position,
+ * applied as soon as the metadata arrives.
+ */
+export function seek(seconds: number, knownDuration?: number): number {
+  const a = getAudio();
+  const d = isFinite(a.duration) && a.duration > 0 ? a.duration : knownDuration && knownDuration > 0 ? knownDuration : Infinity;
+  const target = Math.max(0, Math.min(isFinite(seconds) ? seconds : 0, d - 0.5));
+  if (pendingStart !== null) pendingStart = target;
+  else a.currentTime = target;
+  return target;
+}
+
 /** Move the already-loaded (paused) chapter to a position received from another device. */
 export function seekLoaded(id: string, seconds: number) {
   if (currentId !== id || !el) return;
-  if (pendingStart !== null) pendingStart = seconds;
-  else if (isFinite(el.duration)) el.currentTime = Math.max(0, Math.min(seconds, el.duration - 1));
-  else el.currentTime = Math.max(0, seconds);
+  seek(seconds);
 }
 
 export function playChapter(id: string, url: string, start: number) {

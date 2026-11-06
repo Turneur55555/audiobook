@@ -18,3 +18,23 @@ describe("audio engine position", () => {
     expect(onLeave).toHaveBeenLastCalledWith("b", 40);
   });
 });
+
+// iPhone before the first play: no metadata, duration NaN, currentTime 0.
+describe("seeking before the audio is loaded (iPhone)", () => {
+  it("moves the start position instead of jumping to 0", () => {
+    engine.setHooks({ getNext: () => null, onLeave: () => {}, shouldStopAtEnd: () => false, onChapterEnded: () => {} });
+    engine.loadChapter("c", "https://example.com/c.mp3", 125);
+    expect(engine.seek(engine.position() + 15, 600)).toBe(140);
+    expect(engine.position()).toBe(140);
+    expect(engine.seek(engine.position() - 15, 600)).toBe(125);
+    expect(engine.seek(180, 600)).toBe(180); // « aller à 3:00 »
+    expect(engine.position()).toBe(180);
+  });
+  it("stays inside the episode", () => {
+    engine.loadChapter("d", "https://example.com/d.mp3", 10);
+    expect(engine.seek(-30, 600)).toBe(0);
+    expect(engine.seek(9999, 600)).toBe(599.5);
+    expect(engine.seek(NaN, 600)).toBe(0);
+    engine.stop();
+  });
+});
