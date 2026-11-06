@@ -12,6 +12,14 @@ export function Library(p: {
   onToggleDone: (id: string) => void;
   onEdit: (id: string, patch: { title: string; episode: number | null; series: string }) => Promise<void>;
   onDelete: (c: Chapter) => Promise<void>;
+  offline?: {
+    online: boolean;
+    isDownloaded: (c: Chapter) => boolean;
+    progress: Map<string, number>;
+    onDownload: (id: string) => void;
+    onRemove: (id: string) => void;
+    busy: boolean;
+  };
 }) {
   const [editing, setEditing] = useState<Chapter | null>(null);
   const groups = groupChapters(p.chapters);
@@ -30,18 +38,40 @@ export function Library(p: {
               ? `Audio · ${c.duration ? fmtTime(c.duration) : "durée inconnue"}`
               : `${wordCount(c.text)} mots · ~${Math.max(1, Math.round(wordCount(c.text) / 160))} min`;
             const cur = c.id === p.currentId;
+            const off = p.offline;
+            const saved = !!c.audioUrl && !!off?.isDownloaded(c);
+            const dlPct = off?.progress.get(c.id);
+            const unavailable = !!c.audioUrl && !!off && !off.online && !saved;
             return (
               <article key={c.id} className={`rounded-2xl border bg-card p-4 ${cur ? "border-primary" : "border-border"}`}>
-                <p className="text-sm text-muted-foreground">{c.episode != null ? `Épisode ${c.episode}` : "Sans numéro"} · {meta}</p>
+                <p className="text-sm text-muted-foreground">
+                  {c.episode != null ? `Épisode ${c.episode}` : "Sans numéro"} · {meta}{saved ? " · ✓ hors ligne" : ""}
+                </p>
                 <h3 className="mt-1 font-display text-xl leading-tight">{c.title}</h3>
                 <div className="mt-3 h-2 rounded-full bg-muted">
                   <div className="h-full rounded-full bg-primary" style={{ width: `${pct * 100}%` }} />
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{c.done ? "✓ Écouté" : `${Math.round(pct * 100)} %`}{cur ? " · en cours" : ""}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button onClick={() => p.onPlay(c.id)} className={`${big} flex-1 bg-primary text-primary-foreground`}>
-                    {pct > 0 && pct < 1 ? "▶ Reprendre" : pct >= 1 ? "↺ Réécouter" : "▶ Écouter"}
+                  <button onClick={() => p.onPlay(c.id)} disabled={unavailable}
+                    className={`${big} flex-1 bg-primary text-primary-foreground disabled:opacity-40`}>
+                    {unavailable ? "Non téléchargé" : pct > 0 && pct < 1 ? "▶ Reprendre" : pct >= 1 ? "↺ Réécouter" : "▶ Écouter"}
                   </button>
+                  {c.audioUrl && off && (
+                    <button
+                      onClick={() => {
+                        if (saved) {
+                          if (confirm(`Retirer « ${c.title} » de l’appareil ? Il faudra du réseau pour l’écouter.`)) off.onRemove(c.id);
+                        } else if (dlPct === undefined && off.online && !off.busy) off.onDownload(c.id);
+                      }}
+                      disabled={!saved && (dlPct !== undefined || !off.online || off.busy)}
+                      className={`${big} min-w-14 bg-secondary px-3 disabled:opacity-50`}
+                      aria-label={saved ? "Retirer le téléchargement" : "Télécharger pour écouter hors ligne"}
+                      title={saved ? "Téléchargé — toucher pour retirer" : "Télécharger pour écouter hors ligne"}
+                    >
+                      {dlPct !== undefined ? `${Math.round(dlPct * 100)} %` : saved ? "📲" : "⬇"}
+                    </button>
+                  )}
                   <button onClick={() => p.onToggleDone(c.id)} className={`${big} bg-secondary`} aria-label={c.done ? "Marquer non écouté" : "Marquer écouté"}>
                     {c.done ? "✓" : "○"}
                   </button>

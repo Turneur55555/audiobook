@@ -334,7 +334,7 @@ function AudioPlayer(p: EngineProps) {
         a.pause();
       }
     };
-  }, [c.id, url]);
+  }, [c.id]); // pas [url] : passer à la copie téléchargée ne doit pas couper la lecture en cours
   useSleep(p.sleepEnd, pause, p.onSleepDone);
   useEffect(() => {
     setupMediaSession(c, {

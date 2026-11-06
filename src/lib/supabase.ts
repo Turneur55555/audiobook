@@ -38,6 +38,7 @@ interface Row {
 
 function toChapter(r: Row): Chapter {
   const t = new Date(r.created_at).getTime() || 0;
+  const url = r.audio_path ? sb().storage.from(BUCKET).getPublicUrl(r.audio_path).data.publicUrl : undefined;
   return {
     id: r.id,
     title: r.title,
@@ -46,7 +47,8 @@ function toChapter(r: Row): Chapter {
     lang: r.lang === "en" ? "en" : "fr",
     text: r.body ?? "",
     audioPath: r.audio_path,
-    audioUrl: r.audio_path ? sb().storage.from(BUCKET).getPublicUrl(r.audio_path).data.publicUrl : undefined,
+    audioUrl: url,
+    sourceUrl: url,
     duration: r.duration ?? undefined,
     position: 0,
     createdAt: t,

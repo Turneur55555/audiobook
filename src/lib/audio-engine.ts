@@ -79,8 +79,12 @@ export function position(): number {
 
 export function loadChapter(id: string, url: string, start: number) {
   const a = getAudio();
-  if (currentId === id) return;
-  if (currentId) hooks?.onLeave(currentId, position());
+  if (currentId === id) {
+    // Same chapter: keep it, unless it is paused and a different source is now available
+    // (the downloaded copy) — then switch to it without losing the place.
+    if (a.paused && a.src && a.src !== new URL(url, location.href).href) start = position();
+    else return;
+  } else if (currentId) hooks?.onLeave(currentId, position());
   currentId = id;
   pendingStart = start;
   a.src = url;

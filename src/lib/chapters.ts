@@ -9,7 +9,10 @@ export interface Chapter {
   text: string;
   /** Path in the Supabase "audiobook" bucket. */
   audioPath?: string | null | undefined;
+  /** Address actually played: the Supabase URL, or the downloaded copy (/offline-audio?src=…). */
   audioUrl?: string | undefined;
+  /** Public Supabase URL of the MP3 (key of the offline copy). */
+  sourceUrl?: string | undefined;
   duration?: number | undefined;
   /** Local only: seconds for audio chapters, sentence index for text chapters. */
   position: number;

@@ -1,0 +1,15 @@
+{
+  "name": "Mon Audiobook",
+  "short_name": "Audiobook",
+  "description": "Écoutez Le Seuil d'Astréon, même hors ligne.",
+  "lang": "fr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbf4ea",
+  "theme_color": "#fbf4ea",
+  "icons": [
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/cover-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

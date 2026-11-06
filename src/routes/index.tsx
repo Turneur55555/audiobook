@@ -3,12 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Atelier } from "@/components/audiobook/Atelier";
 import { Library } from "@/components/audiobook/Library";
 import { Player } from "@/components/audiobook/Player";
+import { OfflinePanel } from "@/components/audiobook/OfflinePanel";
 import { SyncPanel } from "@/components/audiobook/SyncPanel";
 import * as db from "@/lib/audiobook-db";
 import * as engine from "@/lib/audio-engine";
 import { groupChapters, type Chapter } from "@/lib/chapters";
 import { deleteChapterRemote, fetchChapters, frError, isOwnerEmail, sb, updateChapter } from "@/lib/supabase";
 import * as sync from "@/lib/sync";
+import * as offline from "@/lib/offline";
 
 const PUSH_DELAY = 10_000;
 
@@ -54,6 +56,108 @@ function Index() {
   /** Bumped to remount a text (speech) player whose position was changed by another device. */
   const [playerRev, setPlayerRev] = useState(0);
 
+  // ---------- Écoute hors ligne ----------
+  const [downloaded, setDownloaded] = useState<Set<string>>(new Set());
+  const [swOn, setSwOn] = useState(false);
+  const [online, setOnline] = useState(true);
+  const [dl, setDl] = useState<{ progress: Map<string, number>; queue: number; done: number; error: string }>({ progress: new Map(), queue: 0, done: 0, error: "" });
+  const [bytes, setBytes] = useState(0);
+  const dlAbort = useRef<AbortController | null>(null);
+  const fromCache = useRef(false);
+  const offRef = useRef({ downloaded, swOn });
+  offRef.current = { downloaded, swOn };
+  /** Adresse à lire : la copie téléchargée si elle existe (et que le service worker est actif), sinon l'original. */
+  const playUrl = (c: Chapter): string | undefined => {
+    const src = c.sourceUrl ?? c.audioUrl;
+    if (!src) return undefined;
+    const { downloaded: d, swOn: on } = offRef.current;
+    return on && d.has(offline.norm(src)) ? offline.offlineUrl(src) : src;
+  };
+  const isDownloaded = (c: Chapter) => !!(c.sourceUrl ?? c.audioUrl) && downloaded.has(offline.norm((c.sourceUrl ?? c.audioUrl)!));
+
+  useEffect(() => {
+    setOnline(navigator.onLine);
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    void offline.registerServiceWorker();
+    setSwOn(offline.swControls());
+    const onCtl = () => setSwOn(offline.swControls());
+    navigator.serviceWorker?.addEventListener("controllerchange", onCtl);
+    void offline.listDownloaded().then(setDownloaded).catch(() => undefined);
+    void offline.downloadedBytes().then(setBytes).catch(() => undefined);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", down);
+      navigator.serviceWorker?.removeEventListener("controllerchange", onCtl);
+    };
+  }, []);
+
+  async function downloadMany(ids: string[]) {
+    const todo = ids
+      .map((id) => ref.current.find((c) => c.id === id))
+      .filter((c): c is Chapter => !!c && !!(c.sourceUrl ?? c.audioUrl) && !isDownloaded(c));
+    if (!todo.length) return;
+    void navigator.storage?.persist?.();
+    const ctl = new AbortController();
+    dlAbort.current = ctl;
+    setDl({ progress: new Map(), queue: todo.length, done: 0, error: "" });
+    let failed = "";
+    for (let i = 0; i < todo.length; i++) {
+      if (ctl.signal.aborted) break;
+      const c = todo[i]!;
+      const src = (c.sourceUrl ?? c.audioUrl)!;
+      try {
+        await offline.downloadAudio(src, (pct) => setDl((d) => ({ ...d, progress: new Map(d.progress).set(c.id, pct) })), ctl.signal);
+        setDownloaded((o) => new Set(o).add(offline.norm(src)));
+      } catch (e) {
+        if (ctl.signal.aborted) break;
+        failed = `Épisode ${c.episode ?? "?"} : ${(e as Error).message}`;
+      }
+      setDl((d) => {
+        const progress = new Map(d.progress);
+        progress.delete(c.id);
+        return { ...d, progress, done: i + 1, error: failed };
+      });
+    }
+    dlAbort.current = null;
+    setDl((d) => ({ ...d, queue: 0, progress: new Map() }));
+    setBytes(await offline.downloadedBytes().catch(() => 0));
+  }
+  async function removeMany(ids: string[]) {
+    for (const id of ids) {
+      const c = ref.current.find((x) => x.id === id);
+      const src = c && (c.sourceUrl ?? c.audioUrl);
+      if (!src) continue;
+      await offline.removeDownload(src);
+      setDownloaded((o) => {
+        const n = new Set(o);
+        n.delete(offline.norm(src));
+        return n;
+      });
+    }
+    setBytes(await offline.downloadedBytes().catch(() => 0));
+  }
+
+  /** Recharge la liste des épisodes depuis le serveur, en gardant les positions locales. */
+  async function refreshChapters() {
+    try {
+      const cs = await fetchChapters();
+      void db.setMeta("chaptersCache", cs);
+      const old = new Map(ref.current.map((c) => [c.id, c]));
+      ref.current = cs.map((c) => {
+        const o = old.get(c.id);
+        return o ? { ...c, position: o.position, done: o.done, duration: c.duration ?? o.duration } : c;
+      });
+      setChapters(ref.current);
+      fromCache.current = false;
+      setNotice((n) => (n.startsWith("Hors ligne") ? "" : n));
+    } catch {
+      /* toujours hors ligne */
+    }
+  }
+
   useEffect(() => {
     const check = async (e?: string | null) => {
       const ok = await isOwnerEmail(e);
@@ -78,7 +182,23 @@ function Index() {
     void navigator.storage?.persist?.();
     (async () => {
       try {
-        const [cs, pos, last] = await Promise.all([fetchChapters(), db.getAllPositions(), db.getMeta<string>("lastId")]);
+        const [cs, pos, last] = await Promise.all([
+          fetchChapters()
+            .then((list) => {
+              void db.setMeta("chaptersCache", list);
+              return list;
+            })
+            .catch(async (e) => {
+              // Pas de réseau : on reprend la dernière bibliothèque enregistrée sur l'appareil.
+              const cached = await db.getMeta<Chapter[]>("chaptersCache");
+              if (!cached?.length) throw e;
+              fromCache.current = true;
+              setNotice("Hors ligne : bibliothèque enregistrée sur cet appareil. Tes positions se resynchroniseront dès le retour du réseau.");
+              return cached;
+            }),
+          db.getAllPositions(),
+          db.getMeta<string>("lastId"),
+        ]);
         const pm = new Map(pos.map((p) => [p.id, p]));
         const merged = cs.map((c) => {
           const p = pm.get(c.id);
@@ -213,6 +333,10 @@ function Index() {
       else if (Date.now() - lastPull.current > 5000) void syncNow();
     };
     const onFocus = () => { if (Date.now() - lastPull.current > 5000) void syncNow(); };
+    const onOnline = () => {
+      if (fromCache.current) void refreshChapters();
+      void syncNow();
+    };
     const onHide = () => void flushPush();
     const onHash = () => {
       const c = sync.normalizeCode(window.location.hash);
@@ -225,13 +349,13 @@ function Index() {
     };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onFocus);
-    window.addEventListener("online", onFocus);
+    window.addEventListener("online", onOnline);
     window.addEventListener("pagehide", onHide);
     window.addEventListener("hashchange", onHash);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onFocus);
-      window.removeEventListener("online", onFocus);
+      window.removeEventListener("online", onOnline);
       window.removeEventListener("pagehide", onHide);
       window.removeEventListener("hashchange", onHash);
     };
@@ -239,7 +363,12 @@ function Index() {
 
   const play = useCallback((id: string) => {
     const c = ref.current.find((x) => x.id === id);
-    if (c?.audioUrl) engine.playChapter(id, c.audioUrl, c.position);
+    const url = c && playUrl(c);
+    if (url && !offline.isOfflineUrl(url) && !navigator.onLine) {
+      setNotice("Cet épisode n’est pas téléchargé : il faut du réseau pour l’écouter.");
+      return;
+    }
+    if (url) engine.playChapter(id, url, c!.position);
     else engine.stop();
     setCurrentId(id);
     setToken((t) => t + 1);
@@ -248,7 +377,8 @@ function Index() {
 
   const currentIdRef = useRef(currentId);
   currentIdRef.current = currentId;
-  const current = chapters.find((c) => c.id === currentId) ?? null;
+  const view = useMemo(() => chapters.map((c) => (c.audioUrl ? { ...c, audioUrl: playUrl(c) } : c)), [chapters, downloaded, swOn]);
+  const current = view.find((c) => c.id === currentId) ?? null;
   const siblings = useMemo(() => {
     if (!current) return { prev: undefined, next: undefined };
     const g = groupChapters(chapters).find((g) => g.chapters.some((c) => c.id === current.id))!;
@@ -270,7 +400,11 @@ function Index() {
     engine.setHooks({
       getNext: () => {
         const n = ref.current.find((c) => c.id === nextRef.current);
-        return n ? { id: n.id, url: n.audioUrl, title: n.title, series: n.series, episode: n.episode } : null;
+        if (!n) return null;
+        const url = playUrl(n);
+        // Hors ligne, on ne passe pas à un épisode qui n'est pas téléchargé.
+        if (url && !offline.isOfflineUrl(url) && !navigator.onLine) return null;
+        return { id: n.id, url, title: n.title, series: n.series, episode: n.episode };
       },
       onLeave: (id, seconds) => {
         update(id, { position: seconds, updatedAt: Date.now() });
@@ -344,6 +478,11 @@ function Index() {
       </header>
 
       <section className="mx-auto max-w-3xl px-4 py-6">
+        {!online && (
+          <p className="mb-4 rounded-xl border border-border bg-card p-3 text-sm" role="status">
+            📴 Hors ligne : seuls les épisodes téléchargés peuvent être écoutés. Tes positions seront envoyées au retour du réseau.
+          </p>
+        )}
         {notice && <p className="mb-6 rounded-xl bg-secondary p-4" role="status">{notice}</p>}
         {error && <p className="mb-6 rounded-xl border border-destructive bg-card p-4 text-destructive" role="alert">{error}</p>}
         {!loaded ? (
@@ -359,7 +498,15 @@ function Index() {
           <AuthorLogin email={email} onDone={() => setTab(isOwner ? "atelier" : "biblio")} />
         ) : tab === "biblio" || tab === "atelier" ? (
           <>
-            <Library chapters={chapters} currentId={currentId} isOwner={isOwner}
+            <Library chapters={view} currentId={currentId} isOwner={isOwner}
+              offline={{
+                online,
+                isDownloaded,
+                progress: dl.progress,
+                onDownload: (id) => void downloadMany([id]),
+                onRemove: (id) => void removeMany([id]),
+                busy: dl.queue > 0,
+              }}
               onPlay={(id) => { play(id); setTab("lecture"); }}
               onToggleDone={(id) => { const c = ref.current.find((x) => x.id === id); update(id, { done: !c?.done }); }}
               onEdit={async (id, patch) => {
@@ -373,6 +520,10 @@ function Index() {
                   setChapters((o) => o.filter((x) => x.id !== c.id));
                 } catch (e) { alert(`Suppression impossible : ${frError(e)}`); }
               }} />
+            <OfflinePanel chapters={view} isDownloaded={isDownloaded} bytes={bytes} online={online} swOn={swOn}
+              queue={dl.queue} done={dl.done} error={dl.error} progress={dl.progress}
+              onDownloadAll={(ids) => void downloadMany(ids)} onRemoveAll={(ids) => void removeMany(ids)}
+              onCancel={() => dlAbort.current?.abort()} />
             <SyncPanel code={syncState.code} lastSync={syncState.at} error={syncState.error}
               onLink={linkTo} onExport={() => void doExport()} onImport={(f) => void doImport(f)} />
           </>
