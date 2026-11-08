@@ -215,12 +215,54 @@ export function planBookRename(cs: Chapter[], fromKey: string, newSeries: string
 
 export const ATELIER_BOOK_KEY = "atelier-livre";
 export const SHELF_BOOK_KEY = "biblio-livre";
+export const SHELF_TITLE_KEY = "biblio-titre";
 
 /** Après renommage d'un livre, les choix mémorisés sur l'appareil suivent le nouveau nom. */
 export function followRenamedBook(fromKey: string, series: string, lang: Lang) {
-  if (recall(SHELF_BOOK_KEY) === fromKey) remember(SHELF_BOOK_KEY, bookKey(series, lang));
+  if (recall(SHELF_BOOK_KEY) === fromKey) {
+    remember(SHELF_BOOK_KEY, bookKey(series, lang));
+    remember(SHELF_TITLE_KEY, splitSeries(series).title.toLowerCase());
+  }
   try {
     const a = JSON.parse(recall(ATELIER_BOOK_KEY) ?? "null") as { series: string; lang: Lang } | null;
     if (a && bookKey(a.series, a.lang) === fromKey) remember(ATELIER_BOOK_KEY, JSON.stringify({ series, lang }));
   } catch { /* valeur illisible : on la laisse */ }
+}
+
+/**
+ * Livre → tomes. Le champ « série » stocke « Titre du livre — Tome 1 » (aucune colonne en plus côté serveur).
+ * Une série sans séparateur est un livre dont le tome n'a pas de nom.
+ */
+export const TOME_SEP = " — ";
+
+export function splitSeries(series: string): { title: string; tome: string } {
+  const s = series.trim();
+  const i = s.lastIndexOf(TOME_SEP);
+  return i > 0 ? { title: s.slice(0, i).trim(), tome: s.slice(i + TOME_SEP.length).trim() } : { title: s, tome: "" };
+}
+
+export function joinSeries(title: string, tome: string): string {
+  const t = title.trim().replace(/\s+/g, " ");
+  const v = tome.trim().replace(/\s+/g, " ");
+  return t && v ? `${t}${TOME_SEP}${v}` : t || v;
+}
+
+export const tomeLabel = (g: Group) => splitSeries(g.series).tome || "Tome unique";
+
+export interface Shelf {
+  key: string;
+  title: string;
+  /** Un tome = une série dans une langue (un Group). */
+  tomes: Group[];
+}
+
+export function groupBooks(cs: Chapter[]): Shelf[] {
+  const map = new Map<string, Shelf>();
+  for (const g of groupChapters(cs)) {
+    const title = splitSeries(g.series).title || "Sans titre";
+    const key = title.toLowerCase();
+    if (!map.has(key)) map.set(key, { key, title, tomes: [] });
+    map.get(key)!.tomes.push(g);
+  }
+  return [...map.values()].sort((a, b) => a.title.localeCompare(b.title, "fr", { numeric: true }));
 }

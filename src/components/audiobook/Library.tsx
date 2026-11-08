@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { SHELF_BOOK_KEY as SHELF_KEY, bookKey, fmtTime, groupChapters, planBookRename, progressOf, recall, remember, wordCount, type Chapter, type Group, type Lang } from "@/lib/chapters";
+import { SHELF_BOOK_KEY as SHELF_KEY, SHELF_TITLE_KEY, bookKey, fmtTime, groupBooks, joinSeries, planBookRename, progressOf, recall, remember, splitSeries, tomeLabel, wordCount, type Chapter, type Group, type Lang } from "@/lib/chapters";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
 const big = "min-h-14 rounded-xl px-5 text-lg font-medium active:scale-95 transition";
@@ -25,51 +25,77 @@ export function Library(p: {
 }) {
   const [editing, setEditing] = useState<Chapter | null>(null);
   const [renaming, setRenaming] = useState<Group | null>(null);
+  const [openTitle, setOpenTitleState] = useState<string | null>(() => recall(SHELF_TITLE_KEY));
   const [openKey, setOpenKeyState] = useState<string | null>(() => recall(SHELF_KEY));
+  const setOpenTitle = (k: string | null) => { setOpenTitleState(k); remember(SHELF_TITLE_KEY, k); window.scrollTo(0, 0); };
   const setOpenKey = (k: string | null) => { setOpenKeyState(k); remember(SHELF_KEY, k); window.scrollTo(0, 0); };
-  const all = groupChapters(p.chapters);
   if (!p.chapters.length) return <p className="text-lg text-muted-foreground">Aucun chapitre pour l’instant.</p>;
 
-  // Un seul livre : on l'ouvre directement. Plusieurs : on montre d'abord l'étagère.
-  const opened = all.length === 1 ? all[0] : all.find((g) => g.key === openKey);
-  if (!opened) {
+  const books = groupBooks(p.chapters);
+  const stats = (cs: Chapter[]) => ({
+    done: cs.filter((c) => c.done).length,
+    pct: cs.reduce((n, c) => n + progressOf(c), 0) / cs.length,
+    cur: cs.some((c) => c.id === p.currentId),
+  });
+  const card = (key: string, title: React.ReactNode, sub: string, cs: Chapter[], onClick: () => void) => {
+    const st = stats(cs);
+    return (
+      <button key={key} onClick={onClick}
+        className={`w-full rounded-2xl border bg-card p-4 text-left active:scale-[0.98] transition ${st.cur ? "border-primary" : "border-border"}`}>
+        <span className="flex items-center justify-between gap-2">
+          <span className="block font-display text-xl">{title}</span>
+          <span className="text-2xl text-muted-foreground" aria-hidden>›</span>
+        </span>
+        <span className="text-sm text-muted-foreground">{sub} · {st.done} écouté(s){st.cur ? " · en cours" : ""}</span>
+        <span className="mt-3 block h-2 rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-primary" style={{ width: `${st.pct * 100}%` }} />
+        </span>
+      </button>
+    );
+  };
+
+  // Niveau 1 : les livres (par titre).
+  const book = books.find((b) => b.key === openTitle);
+  if (!book) {
     return (
       <div className="space-y-3">
         <h2 className="font-display text-2xl">Mes livres</h2>
-        {all.map((g) => {
-          const done = g.chapters.filter((c) => c.done).length;
-          const pct = g.chapters.reduce((n, c) => n + progressOf(c), 0) / g.chapters.length;
-          const cur = g.chapters.some((c) => c.id === p.currentId);
-          return (
-            <button key={g.key} onClick={() => setOpenKey(g.key)}
-              className={`w-full rounded-2xl border bg-card p-4 text-left active:scale-[0.98] transition ${cur ? "border-primary" : "border-border"}`}>
-              <span className="block font-display text-xl">{g.series || "Sans série"} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span></span>
-              <span className="text-sm text-muted-foreground">{g.chapters.length} épisode(s) · {done} écouté(s){cur ? " · en cours" : ""}</span>
-              <span className="mt-3 block h-2 rounded-full bg-muted">
-                <span className="block h-full rounded-full bg-primary" style={{ width: `${pct * 100}%` }} />
-              </span>
-            </button>
-          );
+        {books.map((b) => {
+          const cs = b.tomes.flatMap((t) => t.chapters);
+          return card(b.key, b.title, `${b.tomes.length} tome(s) · ${cs.length} épisode(s)`, cs, () => setOpenTitle(b.key));
         })}
+      </div>
+    );
+  }
+
+  // Niveau 2 : les tomes du livre.
+  const opened = book.tomes.find((g) => g.key === openKey);
+  if (!opened) {
+    return (
+      <div className="space-y-3">
+        <button onClick={() => setOpenTitle(null)} className={`${big} w-full bg-secondary`}>← Mes livres</button>
+        <h2 className="pt-3 font-display text-2xl">{book.title}</h2>
+        {book.tomes.map((g) =>
+          card(g.key, <>{tomeLabel(g)} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span></>,
+            `${g.chapters.length} épisode(s)`, g.chapters, () => setOpenKey(g.key)))}
       </div>
     );
   }
   const groups = [opened];
 
+  // Niveau 3 : les épisodes du tome.
   return (
     <div className="space-y-10">
-      {(all.length > 1 || (p.isOwner && p.onRenameBook)) && (
-        <div className="flex gap-2">
-          {all.length > 1 && <button onClick={() => setOpenKey(null)} className={`${big} flex-1 bg-secondary`}>← Tous les livres</button>}
-          {p.isOwner && p.onRenameBook && (
-            <button onClick={() => setRenaming(opened)} className={`${big} ${all.length > 1 ? "" : "flex-1"} bg-secondary`}>✎ Renommer le livre</button>
-          )}
-        </div>
-      )}
+      <div className="flex gap-2">
+        <button onClick={() => setOpenKey(null)} className={`${big} flex-1 bg-secondary`}>← {book.title}</button>
+        {p.isOwner && p.onRenameBook && (
+          <button onClick={() => setRenaming(opened)} className={`${big} bg-secondary`} aria-label="Renommer le tome">✎</button>
+        )}
+      </div>
       {groups.map((g) => (
         <section key={g.key} className="space-y-3">
           <h2 className="font-display text-2xl">
-            {g.series || "Sans série"} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span>
+            {tomeLabel(g)} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span>
           </h2>
           {g.chapters.map((c) => {
             const pct = progressOf(c);
@@ -133,7 +159,7 @@ export function Library(p: {
       ))}
       {renaming && p.onRenameBook && (
         <RenameBookDialog g={renaming} chapters={p.chapters} onClose={() => setRenaming(null)}
-          onSave={async (series, lang) => { await p.onRenameBook!(renaming.key, series, lang); setRenaming(null); setOpenKey(bookKey(series, lang)); }} />
+          onSave={async (series, lang) => { await p.onRenameBook!(renaming.key, series, lang); setRenaming(null); setOpenTitle(splitSeries(series).title.toLowerCase()); setOpenKey(bookKey(series, lang)); }} />
       )}
       {editing && <EditDialog c={editing} onClose={() => setEditing(null)} onSave={async (patch) => { await p.onEdit(editing.id, patch); setEditing(null); }} />}
     </div>
@@ -163,14 +189,16 @@ function EditDialog({ c, onClose, onSave }: { c: Chapter; onClose: () => void; o
 }
 
 function RenameBookDialog({ g, chapters, onClose, onSave }: { g: Group; chapters: Chapter[]; onClose: () => void; onSave: (series: string, lang: Lang) => Promise<void> }) {
-  const [name, setName] = useState(g.series);
+  const [bookTitle, setBookTitle] = useState(splitSeries(g.series).title);
+  const [tome, setTome] = useState(splitSeries(g.series).tome);
+  const name = joinSeries(bookTitle, tome);
   const [lang, setLang] = useState<Lang>(g.lang);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const plan = planBookRename(chapters, g.key, name, lang);
   const blocked = !name.trim() || plan.same || plan.conflicts.length > 0;
   let info = "";
-  if (!name.trim()) info = "Donne un nom au livre.";
+  if (!name.trim()) info = "Donne un titre au livre.";
   else if (plan.same) info = "Rien ne change.";
   else if (plan.conflicts.length)
     info = `Impossible de fusionner : les épisodes ${plan.conflicts.join(", ")} existent déjà dans « ${plan.series} · ${lang.toUpperCase()} ». Renumérote ou supprime-les d’abord (bouton ✎ ou 🗑 de l’épisode).`;
@@ -179,9 +207,12 @@ function RenameBookDialog({ g, chapters, onClose, onSave }: { g: Group; chapters
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-foreground/40 sm:items-center" onClick={onClose}>
       <div className="w-full max-w-2xl space-y-3 rounded-t-2xl bg-background p-5 sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="font-display text-2xl">Renommer le livre</h2>
-        <p className="text-sm text-muted-foreground">Mets le nom d’un autre livre pour les fusionner.</p>
-        <input value={name} onChange={(e) => { setName(e.target.value); setErr(""); }} placeholder="Nom du livre" className={field} />
+        <h2 className="font-display text-2xl">Renommer le tome</h2>
+        <p className="text-sm text-muted-foreground">Mets le titre et le tome d’un tome existant pour les fusionner.</p>
+        <label className="block"><span className="text-sm text-muted-foreground">Titre du livre</span>
+          <input value={bookTitle} onChange={(e) => { setBookTitle(e.target.value); setErr(""); }} placeholder="ex. Le Seuil d’Astréon" className={field} /></label>
+        <label className="block"><span className="text-sm text-muted-foreground">Tome</span>
+          <input value={tome} onChange={(e) => { setTome(e.target.value); setErr(""); }} placeholder="ex. Tome 1" className={field} /></label>
         <div className="grid grid-cols-2 gap-2">
           {(["fr", "en"] as const).map((l) => (
             <button key={l} onClick={() => setLang(l)} className={`${big} ${lang === l ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>

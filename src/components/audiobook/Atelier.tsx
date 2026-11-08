@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { audioDuration } from "@/lib/audiobook-db";
-import { ATELIER_BOOK_KEY, baseName, bookKey, cleanTitle, episodeFrom, findSameEpisode, groupChapters, recall, remember, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
+import { ATELIER_BOOK_KEY, baseName, bookKey, groupBooks, joinSeries, splitSeries, tomeLabel, cleanTitle, episodeFrom, findSameEpisode, groupChapters, recall, remember, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
 import { frError, insertChapter, removeAudioQuietly, uniqueAudioPath, updateChapterContent, uploadAudio } from "@/lib/supabase";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
@@ -11,37 +11,45 @@ interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | 
 
 const BOOK_KEY = ATELIER_BOOK_KEY;
 
-/** Étape 1 de l'Atelier : choisir un livre existant ou en créer un nouveau. */
+/** Étape 1 de l'Atelier : choisir un tome existant ou en créer un (titre du livre + tome). */
 function BookPicker(p: { chapters: Chapter[]; onPick: (series: string, lang: Lang) => void }) {
-  const books = groupChapters(p.chapters).filter((g) => g.series);
-  const [name, setName] = useState("");
+  const books = groupBooks(p.chapters);
+  const [bookTitle, setBookTitle] = useState("");
+  const [tome, setTome] = useState("");
   const [lang, setLang] = useState<Lang>("fr");
   const [err, setErr] = useState("");
   const create = () => {
-    const n = name.trim().replace(/\s+/g, " ");
-    if (!n) return setErr("Donne un nom au livre (par exemple « Tome 3 »).");
-    const same = books.find((b) => b.key === bookKey(n, lang));
+    if (!bookTitle.trim()) return setErr("Donne le titre du livre (par exemple « Le Seuil d’Astréon »).");
+    if (!tome.trim()) return setErr("Indique le tome (par exemple « Tome 3 »).");
+    const n = joinSeries(bookTitle, tome);
+    const same = groupChapters(p.chapters).find((g) => g.key === bookKey(n, lang));
     p.onPick(same?.series ?? n, lang);
   };
   return (
     <div className="space-y-8">
-      <section className="space-y-3">
-        <h2 className="font-display text-2xl">Dans quel livre déposer ?</h2>
+      <section className="space-y-4">
+        <h2 className="font-display text-2xl">Dans quel tome déposer ?</h2>
         {books.length === 0 && <p className="text-muted-foreground">Aucun livre pour l’instant : crée le premier ci-dessous.</p>}
-        {books.map((b) => {
-          const withAudio = b.chapters.filter((c) => c.audioPath).length;
-          return (
-            <button key={b.key} onClick={() => p.onPick(b.series, b.lang)}
-              className="w-full rounded-2xl border border-border bg-card p-4 text-left active:scale-[0.98] transition">
-              <span className="block font-display text-xl">{b.series} <span className="text-base text-muted-foreground">· {b.lang.toUpperCase()}</span></span>
-              <span className="text-sm text-muted-foreground">{b.chapters.length} épisode(s) · {withAudio} avec audio</span>
-            </button>
-          );
-        })}
+        {books.map((b) => (
+          <div key={b.key} className="space-y-2">
+            <h3 className="font-display text-xl">{b.title}</h3>
+            {b.tomes.map((g) => (
+              <button key={g.key} onClick={() => p.onPick(g.series, g.lang)}
+                className="w-full rounded-2xl border border-border bg-card p-4 text-left active:scale-[0.98] transition">
+                <span className="block text-lg font-medium">{tomeLabel(g)} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span></span>
+                <span className="text-sm text-muted-foreground">{g.chapters.length} épisode(s) · {g.chapters.filter((c) => c.audioPath).length} avec audio</span>
+              </button>
+            ))}
+            <button onClick={() => { setBookTitle(b.title); setTome(""); setErr(""); document.getElementById("nouveau-tome")?.scrollIntoView?.({ behavior: "smooth" }); }}
+              className="w-full rounded-2xl border border-dashed border-border p-3 text-left text-muted-foreground">＋ Nouveau tome de « {b.title} »</button>
+          </div>
+        ))}
       </section>
-      <section className="space-y-3">
-        <h2 className="font-display text-2xl">Nouveau livre</h2>
-        <input value={name} onChange={(e) => { setName(e.target.value); setErr(""); }} placeholder="Nom du livre (ex. Tome 3)" className={field}
+      <section id="nouveau-tome" className="space-y-3">
+        <h2 className="font-display text-2xl">Nouveau livre ou nouveau tome</h2>
+        <input value={bookTitle} onChange={(e) => { setBookTitle(e.target.value); setErr(""); }} placeholder="Titre du livre (ex. Le Seuil d’Astréon)" className={field} list="titres-livres" />
+        <datalist id="titres-livres">{books.map((b) => <option key={b.key} value={b.title} />)}</datalist>
+        <input value={tome} onChange={(e) => { setTome(e.target.value); setErr(""); }} placeholder="Tome (ex. Tome 2)" className={field}
           onKeyDown={(e) => { if (e.key === "Enter") create(); }} />
         <div className="grid grid-cols-2 gap-2">
           {(["fr", "en"] as const).map((l) => (
@@ -194,8 +202,8 @@ function BookUpload(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void; 
     <div className="space-y-8">
       <section className="flex items-center justify-between gap-3 rounded-2xl border border-primary bg-card p-4">
         <div className="min-w-0">
-          <p className="text-sm text-muted-foreground">Livre</p>
-          <p className="truncate font-display text-xl">{series} <span className="text-base text-muted-foreground">· {lang.toUpperCase()}</span></p>
+          <p className="truncate text-sm text-muted-foreground">{splitSeries(series).title}</p>
+          <p className="truncate font-display text-xl">{splitSeries(series).tome || "Tome unique"} <span className="text-base text-muted-foreground">· {lang.toUpperCase()}</span></p>
           <p className="text-sm text-muted-foreground">{p.chapters.filter((c) => bookKey(c.series, c.lang) === bookKey(series, lang)).length} épisode(s) déjà dedans</p>
         </div>
         <button onClick={p.onChangeBook} disabled={busy} className="min-h-12 shrink-0 rounded-xl bg-secondary px-4 font-medium disabled:opacity-50">Changer</button>
@@ -222,7 +230,7 @@ function BookUpload(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void; 
 
       <section className="space-y-3">
         <h2 className="font-display text-2xl">Importer des fichiers</h2>
-        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte. Un épisode déjà présent dans ce livre est mis à jour, pas dupliqué.</p>
+        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte. Un épisode déjà présent dans ce tome est mis à jour, pas dupliqué.</p>
         <label className={`${big} flex cursor-pointer items-center justify-center bg-primary text-primary-foreground ${busy ? "pointer-events-none opacity-50" : ""}`}>
           {busy ? "Envoi en cours…" : "Choisir des fichiers"}
           <input type="file" multiple hidden accept=".txt,.md,.mp3,.m4a,text/plain,text/markdown,audio/mpeg,audio/mp4,audio/x-m4a"

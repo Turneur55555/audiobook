@@ -107,3 +107,22 @@ describe("planBookRename", () => {
     expect(planBookRename(cs, "tome 1|fr", "TOME 1", "fr").same).toBe(false);
   });
 });
+
+import { groupBooks, joinSeries, splitSeries } from "@/lib/chapters";
+describe("livre → tomes", () => {
+  it("découpe et recompose", () => {
+    expect(splitSeries("Le Seuil d'Astréon — Tome 2")).toEqual({ title: "Le Seuil d'Astréon", tome: "Tome 2" });
+    expect(splitSeries("Tome 1")).toEqual({ title: "Tome 1", tome: "" });
+    expect(joinSeries(" Le  Seuil ", " Tome 1 ")).toBe("Le Seuil — Tome 1");
+    expect(joinSeries("Le Seuil", "")).toBe("Le Seuil");
+  });
+  it("range les tomes sous leur livre", () => {
+    const b = groupBooks([
+      makeChapter({ title: "a", series: "Le Seuil — Tome 2", lang: "en" }),
+      makeChapter({ title: "b", series: "Le Seuil — Tome 1" }),
+      makeChapter({ title: "c", series: "Autre" }),
+    ]);
+    expect(b.map((x) => x.title)).toEqual(["Autre", "Le Seuil"]);
+    expect(b[1]!.tomes.map((t) => t.series)).toEqual(["Le Seuil — Tome 1", "Le Seuil — Tome 2"]);
+  });
+});
