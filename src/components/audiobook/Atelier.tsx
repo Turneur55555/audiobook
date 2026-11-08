@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { audioDuration } from "@/lib/audiobook-db";
-import { baseName, bookKey, cleanTitle, episodeFrom, findSameEpisode, groupChapters, recall, remember, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
+import { ATELIER_BOOK_KEY, baseName, bookKey, cleanTitle, episodeFrom, findSameEpisode, groupChapters, recall, remember, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
 import { frError, insertChapter, removeAudioQuietly, uniqueAudioPath, updateChapterContent, uploadAudio } from "@/lib/supabase";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
@@ -9,7 +9,7 @@ const isAudio = (f: File) => f.type.startsWith("audio/") || /\.(mp3|m4a)$/i.test
 
 interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | "erreur"; updated?: boolean; error?: string }
 
-const BOOK_KEY = "atelier-livre";
+const BOOK_KEY = ATELIER_BOOK_KEY;
 
 /** Étape 1 de l'Atelier : choisir un livre existant ou en créer un nouveau. */
 function BookPicker(p: { chapters: Chapter[]; onPick: (series: string, lang: Lang) => void }) {

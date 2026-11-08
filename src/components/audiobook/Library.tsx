@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { fmtTime, groupChapters, progressOf, recall, remember, wordCount, type Chapter } from "@/lib/chapters";
-
-const SHELF_KEY = "biblio-livre";
+import { SHELF_BOOK_KEY as SHELF_KEY, bookKey, fmtTime, groupChapters, planBookRename, progressOf, recall, remember, wordCount, type Chapter, type Group, type Lang } from "@/lib/chapters";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
 const big = "min-h-14 rounded-xl px-5 text-lg font-medium active:scale-95 transition";
@@ -14,6 +12,8 @@ export function Library(p: {
   onToggleDone: (id: string) => void;
   onEdit: (id: string, patch: { title: string; episode: number | null; series: string }) => Promise<void>;
   onDelete: (c: Chapter) => Promise<void>;
+  /** Renomme (ou fusionne) un livre entier. Réservé à l'auteur. */
+  onRenameBook?: (fromKey: string, series: string, lang: Lang) => Promise<void>;
   offline?: {
     online: boolean;
     isDownloaded: (c: Chapter) => boolean;
@@ -24,6 +24,7 @@ export function Library(p: {
   };
 }) {
   const [editing, setEditing] = useState<Chapter | null>(null);
+  const [renaming, setRenaming] = useState<Group | null>(null);
   const [openKey, setOpenKeyState] = useState<string | null>(() => recall(SHELF_KEY));
   const setOpenKey = (k: string | null) => { setOpenKeyState(k); remember(SHELF_KEY, k); window.scrollTo(0, 0); };
   const all = groupChapters(p.chapters);
@@ -57,8 +58,13 @@ export function Library(p: {
 
   return (
     <div className="space-y-10">
-      {all.length > 1 && (
-        <button onClick={() => setOpenKey(null)} className={`${big} bg-secondary`}>← Tous les livres</button>
+      {(all.length > 1 || (p.isOwner && p.onRenameBook)) && (
+        <div className="flex gap-2">
+          {all.length > 1 && <button onClick={() => setOpenKey(null)} className={`${big} flex-1 bg-secondary`}>← Tous les livres</button>}
+          {p.isOwner && p.onRenameBook && (
+            <button onClick={() => setRenaming(opened)} className={`${big} ${all.length > 1 ? "" : "flex-1"} bg-secondary`}>✎ Renommer le livre</button>
+          )}
+        </div>
       )}
       {groups.map((g) => (
         <section key={g.key} className="space-y-3">
@@ -125,6 +131,10 @@ export function Library(p: {
           })}
         </section>
       ))}
+      {renaming && p.onRenameBook && (
+        <RenameBookDialog g={renaming} chapters={p.chapters} onClose={() => setRenaming(null)}
+          onSave={async (series, lang) => { await p.onRenameBook!(renaming.key, series, lang); setRenaming(null); setOpenKey(bookKey(series, lang)); }} />
+      )}
       {editing && <EditDialog c={editing} onClose={() => setEditing(null)} onSave={async (patch) => { await p.onEdit(editing.id, patch); setEditing(null); }} />}
     </div>
   );
@@ -146,6 +156,51 @@ function EditDialog({ c, onClose, onSave }: { c: Chapter; onClose: () => void; o
           <button onClick={onClose} className={`${big} bg-secondary`}>Annuler</button>
           <button disabled={busy} onClick={async () => { setBusy(true); try { await onSave({ title: title.trim() || c.title, episode: episode ? parseInt(episode, 10) : null, series: series.trim() }); } finally { setBusy(false); } }}
             className={`${big} bg-primary text-primary-foreground disabled:opacity-50`}>Enregistrer</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenameBookDialog({ g, chapters, onClose, onSave }: { g: Group; chapters: Chapter[]; onClose: () => void; onSave: (series: string, lang: Lang) => Promise<void> }) {
+  const [name, setName] = useState(g.series);
+  const [lang, setLang] = useState<Lang>(g.lang);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const plan = planBookRename(chapters, g.key, name, lang);
+  const blocked = !name.trim() || plan.same || plan.conflicts.length > 0;
+  let info = "";
+  if (!name.trim()) info = "Donne un nom au livre.";
+  else if (plan.same) info = "Rien ne change.";
+  else if (plan.conflicts.length)
+    info = `Impossible de fusionner : les épisodes ${plan.conflicts.join(", ")} existent déjà dans « ${plan.series} · ${lang.toUpperCase()} ». Renumérote ou supprime-les d’abord (bouton ✎ ou 🗑 de l’épisode).`;
+  else if (plan.merge) info = `Fusion : les ${plan.ids.length} épisode(s) rejoindront le livre existant « ${plan.series} · ${lang.toUpperCase()} ». Le livre « ${g.series} » disparaîtra.`;
+  else info = `${plan.ids.length} épisode(s) seront déplacés vers « ${plan.series} · ${lang.toUpperCase()} ».`;
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-foreground/40 sm:items-center" onClick={onClose}>
+      <div className="w-full max-w-2xl space-y-3 rounded-t-2xl bg-background p-5 sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <h2 className="font-display text-2xl">Renommer le livre</h2>
+        <p className="text-sm text-muted-foreground">Mets le nom d’un autre livre pour les fusionner.</p>
+        <input value={name} onChange={(e) => { setName(e.target.value); setErr(""); }} placeholder="Nom du livre" className={field} />
+        <div className="grid grid-cols-2 gap-2">
+          {(["fr", "en"] as const).map((l) => (
+            <button key={l} onClick={() => setLang(l)} className={`${big} ${lang === l ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>
+              {l === "fr" ? "Français" : "English"}
+            </button>
+          ))}
+        </div>
+        <p className={`rounded-xl p-3 ${plan.conflicts.length ? "border border-destructive text-destructive" : "bg-secondary"}`} role="status">{info}</p>
+        {err && <p className="text-destructive" role="alert">{err}</p>}
+        <div className="grid grid-cols-2 gap-2 pt-2">
+          <button onClick={onClose} className={`${big} bg-secondary`}>Annuler</button>
+          <button disabled={busy || blocked}
+            onClick={async () => {
+              setBusy(true);
+              try { await onSave(plan.series, lang); }
+              catch (e) { setErr(`Échec : ${e instanceof Error ? e.message : String(e)}`); }
+              finally { setBusy(false); }
+            }}
+            className={`${big} bg-primary text-primary-foreground disabled:opacity-50`}>{busy ? "…" : plan.merge ? "Fusionner" : "Renommer"}</button>
         </div>
       </div>
     </div>

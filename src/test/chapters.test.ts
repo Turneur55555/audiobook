@@ -81,3 +81,29 @@ describe("livres", () => {
     expect(_groupChapters([c])[0]!.key).toBe(_bookKey("tome 2", "en"));
   });
 });
+
+import { planBookRename } from "@/lib/chapters";
+describe("planBookRename", () => {
+  const cs = [
+    makeChapter({ title: "a", series: "Tome 1", episode: 1 }),
+    makeChapter({ title: "b", series: "Tome 1", episode: 2 }),
+    makeChapter({ title: "c", series: "Tome 1 v2", episode: 2 }),
+    makeChapter({ title: "d", series: "Tome 1 v2", episode: 3 }),
+  ];
+  it("renomme simplement vers un nom libre", () => {
+    const r = planBookRename(cs, "tome 1|fr", "  Livre   Un ", "fr");
+    expect(r).toMatchObject({ merge: false, series: "Livre Un", conflicts: [], same: false });
+    expect(r.ids).toHaveLength(2);
+  });
+  it("fusionne avec un livre existant et signale les numéros en double", () => {
+    const r = planBookRename(cs, "tome 1 v2|fr", "tome 1", "fr");
+    expect(r).toMatchObject({ merge: true, series: "Tome 1", conflicts: [2] });
+  });
+  it("changer de langue vers un livre vide n'est pas une fusion", () => {
+    expect(planBookRename(cs, "tome 1|fr", "Tome 1", "en")).toMatchObject({ merge: false, conflicts: [] });
+  });
+  it("détecte qu'il n'y a rien à faire", () => {
+    expect(planBookRename(cs, "tome 1|fr", "Tome 1", "fr").same).toBe(true);
+    expect(planBookRename(cs, "tome 1|fr", "TOME 1", "fr").same).toBe(false);
+  });
+});

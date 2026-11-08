@@ -186,3 +186,41 @@ export function remember(key: string, value: string | null) {
 export function recall(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
+
+export interface RenamePlan {
+  /** Épisodes à déplacer. */
+  ids: string[];
+  /** Le livre cible existe déjà : les épisodes y seront ajoutés. */
+  merge: boolean;
+  /** Nom exact du livre cible (celui de l'existant en cas de fusion). */
+  series: string;
+  /** Numéros présents dans les deux livres : la fusion créerait des doublons. */
+  conflicts: number[];
+  /** Rien à faire (même nom, même langue). */
+  same: boolean;
+}
+
+/** Prépare le renommage (ou la fusion) d'un livre entier vers « newSeries · newLang ». */
+export function planBookRename(cs: Chapter[], fromKey: string, newSeries: string, newLang: Lang): RenamePlan {
+  const name = newSeries.trim().replace(/\s+/g, " ");
+  const toKey = bookKey(name, newLang);
+  const source = cs.filter((c) => bookKey(c.series, c.lang) === fromKey);
+  const ids = source.map((c) => c.id);
+  if (toKey === fromKey) return { ids, merge: false, series: name, conflicts: [], same: source.every((c) => c.series === name) };
+  const target = cs.filter((c) => bookKey(c.series, c.lang) === toKey);
+  const taken = new Set(target.map((c) => c.episode).filter((e): e is number => e !== null));
+  const conflicts = [...new Set(source.map((c) => c.episode).filter((e): e is number => e !== null && taken.has(e)))].sort((a, b) => a - b);
+  return { ids, merge: target.length > 0, series: target[0]?.series.trim() ?? name, conflicts, same: false };
+}
+
+export const ATELIER_BOOK_KEY = "atelier-livre";
+export const SHELF_BOOK_KEY = "biblio-livre";
+
+/** Après renommage d'un livre, les choix mémorisés sur l'appareil suivent le nouveau nom. */
+export function followRenamedBook(fromKey: string, series: string, lang: Lang) {
+  if (recall(SHELF_BOOK_KEY) === fromKey) remember(SHELF_BOOK_KEY, bookKey(series, lang));
+  try {
+    const a = JSON.parse(recall(ATELIER_BOOK_KEY) ?? "null") as { series: string; lang: Lang } | null;
+    if (a && bookKey(a.series, a.lang) === fromKey) remember(ATELIER_BOOK_KEY, JSON.stringify({ series, lang }));
+  } catch { /* valeur illisible : on la laisse */ }
+}

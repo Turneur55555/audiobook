@@ -7,8 +7,8 @@ import { OfflinePanel } from "@/components/audiobook/OfflinePanel";
 import { SyncPanel } from "@/components/audiobook/SyncPanel";
 import * as db from "@/lib/audiobook-db";
 import * as engine from "@/lib/audio-engine";
-import { groupChapters, type Chapter } from "@/lib/chapters";
-import { deleteChapterRemote, fetchChapters, frError, isOwnerEmail, sb, updateChapter } from "@/lib/supabase";
+import { followRenamedBook, groupChapters, planBookRename, type Chapter } from "@/lib/chapters";
+import { deleteChapterRemote, fetchChapters, frError, isOwnerEmail, moveChapters, sb, updateChapter } from "@/lib/supabase";
 import * as sync from "@/lib/sync";
 import * as offline from "@/lib/offline";
 
@@ -564,6 +564,15 @@ function Index() {
               }}
               onPlay={(id) => { play(id); setTab("lecture"); }}
               onToggleDone={(id) => { const c = ref.current.find((x) => x.id === id); update(id, { done: !c?.done }); }}
+              onRenameBook={async (fromKey, series, lang) => {
+                const plan = planBookRename(ref.current, fromKey, series, lang);
+                if (plan.conflicts.length) throw new Error(`épisodes en double : ${plan.conflicts.join(", ")}`);
+                try { await moveChapters(plan.ids, plan.series, lang); }
+                catch (e) { throw new Error(frError(e)); }
+                const moved = new Set(plan.ids);
+                setChapters((o) => o.map((c) => (moved.has(c.id) ? { ...c, series: plan.series, lang } : c)));
+                followRenamedBook(fromKey, plan.series, lang);
+              }}
               onEdit={async (id, patch) => {
                 try { await updateChapter(id, patch); update(id, patch); }
                 catch (e) { alert(`Modification impossible : ${frError(e)}`); throw e; }

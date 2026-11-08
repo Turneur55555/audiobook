@@ -68,3 +68,42 @@ describe("Bibliothèque : étagère", () => {
     expect(d.textContent).toContain("T1");
   });
 });
+
+describe("Renommer / fusionner un livre", () => {
+  const base = { currentId: null, isOwner: true, onPlay: () => {}, onToggleDone: () => {}, onEdit: async () => {}, onDelete: async () => {} };
+  const setInput = (d: HTMLElement, v: string) => {
+    const input = d.querySelector(".fixed input") as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const cs = [ch("1", "Tome 1", "fr", 1), ch("2", "Tome 1", "fr", 2), ch("3", "Tome 1 v2", "fr", 2), ch("4", "Tome 1 v2", "fr", 3)];
+
+  it("bloque la fusion si des numéros se chevauchent", () => {
+    const onRenameBook = vi.fn(async () => {});
+    const d = render(<Library chapters={cs} {...base} onRenameBook={onRenameBook} />);
+    click(d, "Tome 1 v2");
+    click(d, "Renommer le livre");
+    setInput(d, "tome 1");
+    expect(d.textContent).toContain("les épisodes 2 existent déjà");
+    const btn = [...d.querySelectorAll("button")].find((b) => b.textContent === "Fusionner")!;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it("renomme et appelle le serveur avec le nouveau nom", async () => {
+    const onRenameBook = vi.fn(async () => {});
+    const d = render(<Library chapters={cs} {...base} onRenameBook={onRenameBook} />);
+    click(d, "Tome 1 v2");
+    click(d, "Renommer le livre");
+    setInput(d, "Tome 2");
+    expect(d.textContent).toContain("2 épisode(s) seront déplacés");
+    await act(async () => { [...d.querySelectorAll("button")].find((b) => b.textContent === "Renommer")!.click(); });
+    expect(onRenameBook).toHaveBeenCalledWith("tome 1 v2|fr", "Tome 2", "fr");
+  });
+
+  it("n'affiche pas le bouton aux auditeurs", () => {
+    const d = render(<Library chapters={cs.slice(0, 2)} {...base} isOwner={false} onRenameBook={async () => {}} />);
+    expect(d.textContent).not.toContain("Renommer le livre");
+  });
+});

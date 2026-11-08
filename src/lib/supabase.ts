@@ -97,6 +97,15 @@ export async function updateChapter(id: string, patch: { title: string; episode:
 }
 
 /** Remplace le contenu d'un épisode existant (texte, titre, audio) et renvoie la ligne à jour. */
+/** Change le livre (nom et langue) de plusieurs épisodes d'un coup. Vérifie que tous ont bien été modifiés. */
+export async function moveChapters(ids: string[], series: string, lang: Lang) {
+  if (!ids.length) return;
+  const { data, error } = await sb().from("chapters").update({ series: series || null, lang }).in("id", ids).select("id");
+  if (error) throw error;
+  if ((data?.length ?? 0) !== ids.length)
+    throw new Error(`seuls ${data?.length ?? 0} épisode(s) sur ${ids.length} ont été modifiés (droits insuffisants ?). Recharge la page pour voir l’état réel.`);
+}
+
 export async function updateChapterContent(id: string, patch: {
   title: string; episode: number | null; body: string; audio_path: string | null; duration: number | null;
 }): Promise<Chapter> {
