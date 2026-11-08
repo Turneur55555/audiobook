@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { audioDuration } from "@/lib/audiobook-db";
-import { baseName, cleanTitle, episodeFrom, findSameEpisode, mostCommonSeries, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
+import { baseName, bookKey, cleanTitle, episodeFrom, findSameEpisode, groupChapters, recall, remember, splitEpisodeHeading, stripHeading, titleFromText, type Chapter, type Lang } from "@/lib/chapters";
 import { frError, insertChapter, removeAudioQuietly, uniqueAudioPath, updateChapterContent, uploadAudio } from "@/lib/supabase";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
@@ -9,9 +9,72 @@ const isAudio = (f: File) => f.type.startsWith("audio/") || /\.(mp3|m4a)$/i.test
 
 interface Job { name: string; pct: number; status: "attente" | "envoi" | "ok" | "erreur"; updated?: boolean; error?: string }
 
-export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void }) {
-  const [series, setSeries] = useState(() => mostCommonSeries(p.chapters));
+const BOOK_KEY = "atelier-livre";
+
+/** Étape 1 de l'Atelier : choisir un livre existant ou en créer un nouveau. */
+function BookPicker(p: { chapters: Chapter[]; onPick: (series: string, lang: Lang) => void }) {
+  const books = groupChapters(p.chapters).filter((g) => g.series);
+  const [name, setName] = useState("");
   const [lang, setLang] = useState<Lang>("fr");
+  const [err, setErr] = useState("");
+  const create = () => {
+    const n = name.trim().replace(/\s+/g, " ");
+    if (!n) return setErr("Donne un nom au livre (par exemple « Tome 3 »).");
+    const same = books.find((b) => b.key === bookKey(n, lang));
+    p.onPick(same?.series ?? n, lang);
+  };
+  return (
+    <div className="space-y-8">
+      <section className="space-y-3">
+        <h2 className="font-display text-2xl">Dans quel livre déposer ?</h2>
+        {books.length === 0 && <p className="text-muted-foreground">Aucun livre pour l’instant : crée le premier ci-dessous.</p>}
+        {books.map((b) => {
+          const withAudio = b.chapters.filter((c) => c.audioPath).length;
+          return (
+            <button key={b.key} onClick={() => p.onPick(b.series, b.lang)}
+              className="w-full rounded-2xl border border-border bg-card p-4 text-left active:scale-[0.98] transition">
+              <span className="block font-display text-xl">{b.series} <span className="text-base text-muted-foreground">· {b.lang.toUpperCase()}</span></span>
+              <span className="text-sm text-muted-foreground">{b.chapters.length} épisode(s) · {withAudio} avec audio</span>
+            </button>
+          );
+        })}
+      </section>
+      <section className="space-y-3">
+        <h2 className="font-display text-2xl">Nouveau livre</h2>
+        <input value={name} onChange={(e) => { setName(e.target.value); setErr(""); }} placeholder="Nom du livre (ex. Tome 3)" className={field}
+          onKeyDown={(e) => { if (e.key === "Enter") create(); }} />
+        <div className="grid grid-cols-2 gap-2">
+          {(["fr", "en"] as const).map((l) => (
+            <button key={l} onClick={() => setLang(l)}
+              className={`${big} ${lang === l ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>
+              {l === "fr" ? "Français" : "English"}
+            </button>
+          ))}
+        </div>
+        {err && <p className="text-destructive">{err}</p>}
+        <button onClick={create} className={`${big} bg-primary text-primary-foreground`}>Créer et déposer dedans</button>
+      </section>
+    </div>
+  );
+}
+
+export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void }) {
+  const [book, setBook] = useState<{ series: string; lang: Lang } | null>(() => {
+    const v = recall(BOOK_KEY);
+    if (!v) return null;
+    try { const b = JSON.parse(v) as { series: string; lang: Lang }; return b.series && (b.lang === "fr" || b.lang === "en") ? b : null; }
+    catch { return null; }
+  });
+  const pick = (b: { series: string; lang: Lang } | null) => {
+    setBook(b);
+    remember(BOOK_KEY, b ? JSON.stringify(b) : null);
+  };
+  if (!book) return <BookPicker chapters={p.chapters} onPick={(series, lang) => pick({ series, lang })} />;
+  return <BookUpload key={bookKey(book.series, book.lang)} {...p} series={book.series} lang={book.lang} onChangeBook={() => pick(null)} />;
+}
+
+function BookUpload(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => void; series: string; lang: Lang; onChangeBook: () => void }) {
+  const { series, lang } = p;
   const [title, setTitle] = useState("");
   const [episode, setEpisode] = useState("");
   const [text, setText] = useState("");
@@ -70,14 +133,8 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
     }
   }
 
-  const noSeries = () => {
-    if (series.trim()) return false;
-    setMsg("Indique d’abord la série dans « Série et langue » (par exemple « Tome 1 »), puis relance l’import.");
-    return true;
-  };
-
   async function importFiles(list: FileList | null) {
-    if (!list?.length || noSeries()) return;
+    if (!list?.length) return;
     setBusy(true);
     setMsg("");
     const byName = new Map<string, { text?: File; audio?: File }>();
@@ -115,7 +172,6 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
 
   async function addOne() {
     if (!text.trim() && !audio) return setMsg("Ajoutez un texte ou un fichier audio.");
-    if (noSeries()) return;
     setBusy(true);
     setMsg("");
     setJobs(audio ? [{ name: audio.name, pct: 0, status: "envoi" }] : []);
@@ -136,6 +192,14 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
 
   return (
     <div className="space-y-8">
+      <section className="flex items-center justify-between gap-3 rounded-2xl border border-primary bg-card p-4">
+        <div className="min-w-0">
+          <p className="text-sm text-muted-foreground">Livre</p>
+          <p className="truncate font-display text-xl">{series} <span className="text-base text-muted-foreground">· {lang.toUpperCase()}</span></p>
+          <p className="text-sm text-muted-foreground">{p.chapters.filter((c) => bookKey(c.series, c.lang) === bookKey(series, lang)).length} épisode(s) déjà dedans</p>
+        </div>
+        <button onClick={p.onChangeBook} disabled={busy} className="min-h-12 shrink-0 rounded-xl bg-secondary px-4 font-medium disabled:opacity-50">Changer</button>
+      </section>
       {msg && <p className="rounded-xl bg-secondary p-4" role="status">{msg}</p>}
       {jobs.length > 0 && (
         <ul className="space-y-2">
@@ -157,21 +221,8 @@ export function Atelier(p: { chapters: Chapter[]; onSaved: (cs: Chapter[]) => vo
       )}
 
       <section className="space-y-3">
-        <h2 className="font-display text-2xl">Série et langue</h2>
-        <input value={series} onChange={(e) => setSeries(e.target.value)} placeholder="Série / tome (ex. Tome 1)" className={field} />
-        <div className="grid grid-cols-2 gap-2">
-          {(["fr", "en"] as const).map((l) => (
-            <button key={l} onClick={() => setLang(l)}
-              className={`${big} ${lang === l ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>
-              {l === "fr" ? "Français" : "English"}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-3">
         <h2 className="font-display text-2xl">Importer des fichiers</h2>
-        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte. Un épisode déjà présent dans ce tome est mis à jour, pas dupliqué.</p>
+        <p className="text-muted-foreground">.txt, .md, .mp3 ou .m4a — plusieurs à la fois. Un audio portant le même nom qu’un texte y est rattaché. Le titre vient de la première ligne du texte. Un épisode déjà présent dans ce livre est mis à jour, pas dupliqué.</p>
         <label className={`${big} flex cursor-pointer items-center justify-center bg-primary text-primary-foreground ${busy ? "pointer-events-none opacity-50" : ""}`}>
           {busy ? "Envoi en cours…" : "Choisir des fichiers"}
           <input type="file" multiple hidden accept=".txt,.md,.mp3,.m4a,text/plain,text/markdown,audio/mpeg,audio/mp4,audio/x-m4a"

@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { fmtTime, groupChapters, progressOf, wordCount, type Chapter } from "@/lib/chapters";
+import { fmtTime, groupChapters, progressOf, recall, remember, wordCount, type Chapter } from "@/lib/chapters";
+
+const SHELF_KEY = "biblio-livre";
 
 const field = "h-14 w-full rounded-xl border border-input bg-card px-4 text-lg";
 const big = "min-h-14 rounded-xl px-5 text-lg font-medium active:scale-95 transition";
@@ -22,11 +24,42 @@ export function Library(p: {
   };
 }) {
   const [editing, setEditing] = useState<Chapter | null>(null);
-  const groups = groupChapters(p.chapters);
+  const [openKey, setOpenKeyState] = useState<string | null>(() => recall(SHELF_KEY));
+  const setOpenKey = (k: string | null) => { setOpenKeyState(k); remember(SHELF_KEY, k); window.scrollTo(0, 0); };
+  const all = groupChapters(p.chapters);
   if (!p.chapters.length) return <p className="text-lg text-muted-foreground">Aucun chapitre pour l’instant.</p>;
+
+  // Un seul livre : on l'ouvre directement. Plusieurs : on montre d'abord l'étagère.
+  const opened = all.length === 1 ? all[0] : all.find((g) => g.key === openKey);
+  if (!opened) {
+    return (
+      <div className="space-y-3">
+        <h2 className="font-display text-2xl">Mes livres</h2>
+        {all.map((g) => {
+          const done = g.chapters.filter((c) => c.done).length;
+          const pct = g.chapters.reduce((n, c) => n + progressOf(c), 0) / g.chapters.length;
+          const cur = g.chapters.some((c) => c.id === p.currentId);
+          return (
+            <button key={g.key} onClick={() => setOpenKey(g.key)}
+              className={`w-full rounded-2xl border bg-card p-4 text-left active:scale-[0.98] transition ${cur ? "border-primary" : "border-border"}`}>
+              <span className="block font-display text-xl">{g.series || "Sans série"} <span className="text-base text-muted-foreground">· {g.lang.toUpperCase()}</span></span>
+              <span className="text-sm text-muted-foreground">{g.chapters.length} épisode(s) · {done} écouté(s){cur ? " · en cours" : ""}</span>
+              <span className="mt-3 block h-2 rounded-full bg-muted">
+                <span className="block h-full rounded-full bg-primary" style={{ width: `${pct * 100}%` }} />
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+  const groups = [opened];
 
   return (
     <div className="space-y-10">
+      {all.length > 1 && (
+        <button onClick={() => setOpenKey(null)} className={`${big} bg-secondary`}>← Tous les livres</button>
+      )}
       {groups.map((g) => (
         <section key={g.key} className="space-y-3">
           <h2 className="font-display text-2xl">

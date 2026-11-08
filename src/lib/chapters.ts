@@ -133,7 +133,7 @@ export interface Group {
 export function groupChapters(cs: Chapter[]): Group[] {
   const map = new Map<string, Group>();
   for (const c of cs) {
-    const key = `${c.series.trim().toLowerCase()}|${c.lang}`;
+    const key = bookKey(c.series, c.lang);
     if (!map.has(key)) map.set(key, { key, series: c.series.trim(), lang: c.lang, chapters: [] });
     map.get(key)!.chapters.push(c);
   }
@@ -168,4 +168,21 @@ export function fmtTime(sec: number) {
   const s = Math.floor(sec % 60);
   const ss = s.toString().padStart(2, "0");
   return h ? `${h}:${m.toString().padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** Un livre = une série dans une langue. Clé stable, identique à celle de groupChapters. */
+export function bookKey(series: string, lang: Lang): string {
+  return `${series.trim().toLowerCase()}|${lang}`;
+}
+
+/** Mémorise une petite valeur sur l'appareil (choix du livre). Silencieux si le stockage est indisponible. */
+export function remember(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch { /* stockage indisponible : on oublie simplement */ }
+}
+
+export function recall(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
 }

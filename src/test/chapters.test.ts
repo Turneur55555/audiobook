@@ -73,3 +73,11 @@ describe("re-import of an existing episode", () => {
     expect(findSameEpisode(cs, "Tome 1", "fr", null)).toBeUndefined();
   });
 });
+
+import { bookKey as _bookKey, groupChapters as _groupChapters } from "@/lib/chapters";
+describe("livres", () => {
+  it("la clé d'un livre correspond à celle des groupes", () => {
+    const c = { id: "1", title: "a", episode: 1, series: " Tome 2 ", lang: "en" as const, text: "", position: 0, createdAt: 0, updatedAt: 0 };
+    expect(_groupChapters([c])[0]!.key).toBe(_bookKey("tome 2", "en"));
+  });
+});
